@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QMimeData, Signal
 from PySide6.QtGui import (
     QDragEnterEvent, QDropEvent, QIcon, QPixmap, QShortcut, QKeySequence,
-    QImage, QColor, QBrush, QPainter, QCursor
 )
 
 
