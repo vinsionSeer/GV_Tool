@@ -1,0 +1,20 @@
+# ────────────────────────────────────────────
+# 网格点位可视化工具 - 依赖清单
+# 安装命令: pip install -r requirements.txt
+# Python 要求: 3.12+（锁定版本已验证兼容 3.12 / 3.13；
+#              numpy 2.5.x 最低要求 3.12，matplotlib 3.11.x 最低要求 3.11）
+# ────────────────────────────────────────────
+
+# 运行时依赖（GUI 与绘图必需）
+PySide6==6.11.2        # Qt6 桌面 GUI 框架
+matplotlib==3.11.2     # 网格坐标图 / 热力图绘制
+numpy==2.5.3           # 数值计算（热力图矩阵、位图渲染）
+pandas==2.3.3          # 表格读取与解析（.xlsx / .csv / 粘贴文本）
+seaborn==0.13.2        # 热力图（sns.heatmap）
+openpyxl==3.1.5        # 读取 .xlsx（pandas engine）
+xlrd==2.0.2            # 读取 .xls（pandas 默认引擎，缺失时 .xls 无法打开）
+Pillow==12.3.0         # 报告总结 / 图片对比拼接与剪贴板输出
+
+# 打包依赖（仅在发布 .exe / macOS .app 时需要，日常运行不需要）
+# pyinstaller==6.22.3
+# pyinstaller-hooks-contrib==2026.7
