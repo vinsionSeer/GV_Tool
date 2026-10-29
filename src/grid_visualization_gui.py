@@ -1166,6 +1166,166 @@ def draw_heatmap_table(data: dict, cfg: GridConfig) -> Figure:
     fig.tight_layout()
     return fig
 
+def draw_block_view(data: dict, cfg: GridConfig, title: str,
+                    compare_data: dict = None,
+                    compare_title: str = None,
+                    marked_points=None) -> Figure:
+    """方块视图（圆角方块表格）。
+
+    - 单面板（默认，compare_data=None）：当前数据一块方块表；
+    - 对比模式（compare_data 不为空）：左右双面板，右面板按同格成功次数
+      显示 ▲绿（Δ提升）/ ▼红（Δ退化）/ —灰（持平）。
+
+    配色（按成功次数）：
+      (0,0) 未覆盖 → 灰
+      成功=0 失败>0 → 红（0次全失败）
+      成功=1 → 黄
+      成功>=2 → 绿色热力色系（Greens，由浅绿到深绿，次数越多越深）
+    采样点：仅 marked_points 中的点位，蓝色圆点标在方块右上方。
+    面板标题已按需求移除。
+    """
+    from matplotlib.patches import FancyBboxPatch
+    from matplotlib import cm
+    import matplotlib.colors as mcolors
+
+    def panel_stats(d):
+        return max([s + f for s, f in d.values()] or [1])
+
+    per = panel_stats(data)
+    # 方块内数字专用圆滑字体（Arial Rounded MT Bold，回退微软雅黑）
+    _num_font = fm.FontProperties(
+        family=["Arial Rounded MT Bold", "Microsoft YaHei"])
+    if marked_points is None:
+        marked_points = set()
+
+    def green_hex(s, per):
+        # 成功次数 s(>=2) 映射到 Greens 0.32（浅）..0.90（深）
+        norm = (s - 2) / max(1, per - 2)
+        return mcolors.to_hex(cm.Greens(0.32 + 0.58 * norm))
+
+    def cell_color(s, f, per):
+        if s == 0 and f == 0:
+            return "#D0D0D0"          # 未覆盖点位：灰
+        if s == 0:
+            return "#E53935"          # 0次全失败：红
+        if s == 1:
+            return "#FFC107"          # 成功1次：黄
+        return green_hex(s, per)      # 成功>=2：绿色热力色系
+
+    def text_color(s, f, per):
+        # 全失败红格（s=0 f>0）或失败次数为0（f=0）白字，其余黑字
+        if s == 0 and f > 0:
+            return "#FFFFFF"
+        if f == 0:
+            return "#FFFFFF"
+        return "#1A1A1A"
+
+    if compare_data:
+        per_r = panel_stats(compare_data)
+        fig = Figure(figsize=(cfg.fig_width * 1.85,
+                              max(5.0, cfg.fig_height * 0.95)), dpi=100)
+        ax1 = fig.add_subplot(121)
+        ax2 = fig.add_subplot(122)
+    else:
+        fig = Figure(figsize=(max(6.0, cfg.fig_width * 0.95),
+                              max(5.0, cfg.fig_height * 0.95)), dpi=100)
+        ax1 = fig.add_subplot(111)
+        ax2 = None
+
+    _gap = 0.09          # 方块内缩：增大方块间距
+    _round = 0.12        # 圆角大小
+
+    def draw_panel(ax, d, per, right=False):
+        n_rows, n_cols = cfg.n_rows, cfg.n_cols
+        ax.set_xlim(-1.0, n_cols + 0.2)
+        ax.set_ylim(n_rows + 0.8, -0.8)
+        ax.set_aspect("equal")
+        for i, letter in enumerate(cfg.row_letters):
+            for j, col in enumerate(cfg.col_numbers):
+                pid = f"{letter}{col}"
+                s, f = d.get(pid, (0, 0))
+                x0, y0 = j, i
+                # 圆角方块（圆滑圆角 + 大方块间距）
+                ax.add_patch(FancyBboxPatch(
+                    (x0 + _gap, y0 + _gap), 1 - 2 * _gap, 1 - 2 * _gap,
+                    boxstyle=f"round,pad=0,rounding_size={_round}",
+                    facecolor=cell_color(s, f, per), edgecolor="none"))
+                if s + f > 0:
+                    ax.text(x0 + 0.5, y0 + 0.5, str(s), ha="center",
+                            va="center", fontsize=16,
+                            color=text_color(s, f, per),
+                            fontproperties=_num_font)
+                # 采样点：仅被标注点位，蓝色圆点（外圈白环）标在方块右上方
+                if pid in marked_points:
+                    ax.text(x0 + 0.80, y0 + 0.22, "●", ha="center",
+                            va="center", fontsize=15, color="white")
+                    ax.text(x0 + 0.80, y0 + 0.22, "●", ha="center",
+                            va="center", fontsize=10, color="#4169E1")
+                if right:
+                    ls = data.get(pid, (0, 0))[0]
+                    if s + f > 0 or ls > 0:
+                        if s > ls:
+                            mark, mcolor = "▲", "#2E7D32"
+                        elif s < ls:
+                            mark, mcolor = "▼", "#E53935"
+                        else:
+                            mark, mcolor = "—", "#999999"
+                        ax.text(x0 + 0.13, y0 + 0.86, mark, ha="center",
+                                va="center", fontsize=9, color=mcolor,
+                                fontproperties=CHINESE_FONT)
+        # 行/列标签：靠近方块、加粗、灰色
+        for i, letter in enumerate(cfg.row_letters):
+            ax.text(-0.16, i + 0.5, letter, ha="center", va="center",
+                    fontsize=12, fontweight="bold", color="#888888",
+                    fontproperties=CHINESE_FONT)
+        for j, col in enumerate(cfg.col_numbers):
+            ax.text(j + 0.5, n_rows + 0.08, str(col), ha="center",
+                    va="center", fontsize=11, fontweight="bold",
+                    color="#888888")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color("#CCCCCC")
+
+    draw_panel(ax1, data, per)
+
+    # 图例（绿色三档示例，无文字项不占标签宽）
+    g_light = mcolors.to_hex(cm.Greens(0.32))
+    g_mid = mcolors.to_hex(cm.Greens(0.60))
+    g_dark = mcolors.to_hex(cm.Greens(0.90))
+    _legend = [
+        ("#E53935", "0次全失败", "●", 0.114),
+        ("#FFC107", "成功1次", "●", 0.10),
+        (g_light, "", "●", 0.04),
+        (g_mid, "", "●", 0.04),
+        (g_dark, "成功≥2（由浅到深）", "●", 0.15),
+        ("#4169E1", "采样点", "●", 0.085),
+    ]
+    if compare_data:
+        draw_panel(ax2, compare_data, per_r, right=True)
+        fig.subplots_adjust(bottom=0.10, wspace=0.18)
+        _legend += [
+            ("#2E7D32", "Δ提升", "▲", 0.10),
+            ("#999999", "持平", "—", 0.08),
+            ("#E53935", "Δ退化", "▼", 0.10),
+        ]
+    else:
+        fig.subplots_adjust(bottom=0.10)
+
+    _total = sum(item[3] for item in _legend)
+    _lx = (1 - _total) / 2  # 图例整体居中
+    for _color, _label, _sym, _step in _legend:
+        fig.text(_lx, 0.03, _sym, color=_color, ha="center", va="center",
+                 fontsize=11)
+        if _label:
+            fig.text(_lx + 0.014, 0.03, _label, color="#555555",
+                     ha="left", va="center", fontsize=9)
+        _lx += _step
+
+    return fig
+
+
+
 
 # ────────────────────────────────────────────
 # 拖拽区域组件
@@ -1811,6 +1971,9 @@ class MainWindow(QMainWindow):
         self.current_file = None
         self.grid_cfg = GridConfig()          # 当前网格画布配置
         self.current_chart_type = "grid"      # 当前预览的图类型
+        self.compare_data = None              # 方块视图对比模式右侧数据（导入第二份文件）
+        self.compare_title = "对比数据"
+        self._block_compare = False           # 方块视图是否处于对比模式（子功能）
         self.show_other_names = True          # 默认标注其余（未测试）点位名称
         self._center_line_style = "none"        # 中心线样式：none 不显示 / dashed 断线 / solid 实线
         self.chart_title = None               # 自定义网格图标题（None=默认标题）
@@ -1838,6 +2001,7 @@ class MainWindow(QMainWindow):
         self.import_menu.addAction("浏览文件…", self.browse_file)
         self.import_menu.addAction("拖拽导入…", self.open_drop_import)
         self.import_menu.addAction("粘贴导入…", self.open_paste_import)
+        self.import_menu.addAction("导入对比数据…", self.open_compare_import)
 
         self.settings_menu = self.menuBar().addMenu("⚙️ 设置")
         self.settings_menu.addAction("画布设置…", self.open_canvas_settings)
@@ -1845,11 +2009,14 @@ class MainWindow(QMainWindow):
         self.view_menu = self.menuBar().addMenu("📊 视图")
         self.view_grid_action = self.view_menu.addAction("网格坐标图")
         self.view_heat_action = self.view_menu.addAction("热力图")
-        for a in (self.view_grid_action, self.view_heat_action):
+        self.view_block_action = self.view_menu.addAction("方块视图")
+        for a in (self.view_grid_action, self.view_heat_action,
+                  self.view_block_action):
             a.setCheckable(True)
         self.view_grid_action.setChecked(True)
         self.view_grid_action.triggered.connect(lambda: self.show_chart("grid"))
         self.view_heat_action.triggered.connect(lambda: self.show_chart("heatmap"))
+        self.view_block_action.triggered.connect(lambda: self.show_chart("block"))
 
         # ── 分割器：左侧数据表，右侧图表 ──
         splitter = QSplitter(Qt.Horizontal)
@@ -2043,6 +2210,26 @@ class MainWindow(QMainWindow):
         tab_layout.addWidget(self.title_edit)
         tab_layout.addStretch()
 
+        self.block_compare_btn = QPushButton("对比模式")
+        self.block_compare_btn.setCheckable(True)
+        self.block_compare_btn.setToolTip("方块视图子功能：切换单面板 / 左右双面板对比（需先导入对比数据）")
+        self.block_compare_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F5F5F5;
+                color: #333333;
+                border: 1px solid #BBBBBB;
+                padding: 6px 14px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #E8F0FE; border-color: #4169E1; }
+            QPushButton:checked { background-color: #4169E1; color: white; border-color: #4169E1; }
+            QPushButton:disabled { background-color: #EEEEEE; color: #AAAAAA; }
+        """)
+        self.block_compare_btn.toggled.connect(self.toggle_block_compare)
+        self.block_compare_btn.setEnabled(False)
+        tab_layout.addWidget(self.block_compare_btn)
+
         self.copy_btn = QPushButton("保存图片")
         self.copy_btn.setToolTip("保存当前图表：复制到剪贴板或另存为 PNG（默认文件名同步标题）")
         self.copy_btn.setStyleSheet("""
@@ -2167,6 +2354,38 @@ class MainWindow(QMainWindow):
         """对话框解析回调：成功则关闭对话框"""
         if self.import_pasted_data(text):
             dlg.accept()
+
+    def toggle_block_compare(self, checked: bool):
+        """方块视图子功能：切换单面板 / 双面板对比模式"""
+        if checked and not self.compare_data:
+            QMessageBox.information(
+                self, "提示",
+                "请先通过 📥 导入 → 导入对比数据… 加载第二组数据")
+            self.block_compare_btn.setChecked(False)
+            return
+        self._block_compare = checked
+        if self.current_chart_type == "block":
+            self.show_chart("block")
+
+    def open_compare_import(self):
+        """导入第二份数据文件作为方块视图对比模式的右侧面板（左侧用当前表格数据）"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择对比数据文件（方块视图右侧面板）", "",
+            "Excel 文件 (*.xlsx *.xls);;CSV 文件 (*.csv);;所有文件 (*)")
+        if not file_path:
+            return
+        data, notes, error = read_table_data(file_path)
+        if error:
+            QMessageBox.warning(self, "错误", f"读取对比数据失败:\n{error}")
+            return
+        self.compare_data = data
+        self.compare_title = os.path.basename(file_path)
+        # 自动进入方块视图并开启对比模式
+        self._block_compare = True
+        self.block_compare_btn.setChecked(True)
+        self.show_chart("block")
+        self.status_bar.showMessage(
+            f"已导入对比数据: {os.path.basename(file_path)}")
 
     def browse_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -3024,6 +3243,16 @@ class MainWindow(QMainWindow):
             return
         if self.current_chart_type == "heatmap":
             fig = draw_heatmap_table(self.current_data, self.grid_cfg)
+        elif self.current_chart_type == "block":
+            if self._block_compare and self.compare_data:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据", self.compare_data,
+                                      self.compare_title,
+                                      marked_points=self._marked)
+            else:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据",
+                                      marked_points=self._marked)
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
@@ -3049,6 +3278,17 @@ class MainWindow(QMainWindow):
         if self.current_chart_type == "heatmap":
             fig = draw_heatmap_table(self.current_data, self.grid_cfg)
             default_name = f"{base}_热力图.png"
+        elif self.current_chart_type == "block":
+            if self._block_compare and self.compare_data:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据", self.compare_data,
+                                      self.compare_title,
+                                      marked_points=self._marked)
+            else:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据",
+                                      marked_points=self._marked)
+            default_name = f"{base}_方块视图.png"
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
@@ -3086,6 +3326,17 @@ class MainWindow(QMainWindow):
         if self.current_chart_type == "heatmap":
             fig = draw_heatmap_table(self.current_data, self.grid_cfg)
             title = "热力图 - 全屏"
+        elif self.current_chart_type == "block":
+            if self._block_compare and self.compare_data:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据", self.compare_data,
+                                      self.compare_title,
+                                      marked_points=self._marked)
+            else:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      "当前数据",
+                                      marked_points=self._marked)
+            title = "方块视图 - 全屏"
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
@@ -3135,11 +3386,28 @@ class MainWindow(QMainWindow):
         if chart_type == "heatmap" and not self.current_data:
             QMessageBox.information(self, "提示", "热力图需要先导入或录入点位数据")
             chart_type = "grid"
+        if chart_type == "block" and not self.current_data:
+            QMessageBox.information(self, "提示", "方块视图需要先导入或录入点位数据")
+            chart_type = "grid"
+        # 对比模式但右侧数据缺失时自动回退单面板
+        if self._block_compare and not self.compare_data:
+            self._block_compare = False
+            self.block_compare_btn.setChecked(False)
         self.current_chart_type = chart_type
         # 同步“视图”菜单勾选与当前图类型提示
         self.view_grid_action.setChecked(chart_type == "grid")
         self.view_heat_action.setChecked(chart_type == "heatmap")
-        self.chart_type_label.setText("当前：" + ("热力图" if chart_type == "heatmap" else "网格坐标图"))
+        self.view_block_action.setChecked(chart_type == "block")
+        # 对比模式按钮仅在方块视图启用，勾选态同步当前模式；
+        # 程序化同步时屏蔽信号，避免 toggled 反向改写 _block_compare
+        self.block_compare_btn.blockSignals(True)
+        self.block_compare_btn.setEnabled(chart_type == "block")
+        self.block_compare_btn.setChecked(
+            chart_type == "block" and self._block_compare)
+        self.block_compare_btn.blockSignals(False)
+        _type_names = {"grid": "网格坐标图", "heatmap": "热力图",
+                       "block": "方块视图"}
+        self.chart_type_label.setText("当前：" + _type_names.get(chart_type, "网格坐标图"))
 
         if chart_type == "grid":
             fig = draw_grid_visualization(
@@ -3147,6 +3415,19 @@ class MainWindow(QMainWindow):
                 self.chart_title, untested_color=self._untested_color,
                 marked_points=self._marked,
                 center_line_style=self._center_line_style)
+        elif chart_type == "block":
+            left_title = (os.path.basename(self.current_file)
+                          if getattr(self, "current_file", None)
+                          else "当前数据")
+            if self._block_compare and self.compare_data:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      left_title, self.compare_data,
+                                      self.compare_title,
+                                      marked_points=self._marked)
+            else:
+                fig = draw_block_view(self.current_data, self.grid_cfg,
+                                      left_title,
+                                      marked_points=self._marked)
         else:
             fig = draw_heatmap_table(self.current_data, self.grid_cfg)
 
