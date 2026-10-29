@@ -1,5 +1,5 @@
-"""
-网格测试点位可视化 - GUI 界面
+# -*- coding: utf-8 -*-
+"""网格测试点位可视化 - GUI 界面
 使用 PySide6 框架，支持拖拽导入表格文件
 """
 
@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QFileDialog, QMessageBox, QSplitter, QFrame, QStatusBar, QGroupBox,
     QSpinBox, QDoubleSpinBox, QDialog, QPlainTextEdit, QLineEdit,
-    QComboBox, QInputDialog, QMenu, QColorDialog
+    QComboBox, QInputDialog, QMenu, QColorDialog,
+    QCheckBox, QFormLayout, QDialogButtonBox, QSizePolicy,
 )
 from PySide6.QtCore import Qt, QMimeData, Signal
 from PySide6.QtGui import (
     QDragEnterEvent, QDropEvent, QIcon, QPixmap, QShortcut, QKeySequence,
+    QImage, QColor, QPainter, QBrush,
 )
 
 
@@ -121,6 +123,106 @@ class GridConfig:
         else:
             col_part = f"列={int(self.center_col - 0.5)}/{int(self.center_col + 0.5)}之间"
         return f"{row_part}，{col_part}"
+
+
+class CanvasSettingsDialog(QDialog):
+    """画布设置对话框：行数/列数/画布宽高 + 中心点实时提示 + 显示全部点位开关。
+
+    确定后由主窗口读取 result_config() / result_show_names() 应用。
+    """
+
+    def __init__(self, cfg: GridConfig, show_other_names: bool,
+                 center_line_style: str = "none", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("画布设置")
+        self.setMinimumWidth(360)
+        self.setModal(True)
+
+        form = QFormLayout(self)
+        form.setSpacing(10)
+
+        self.rows_spin = QSpinBox()
+        self.rows_spin.setRange(3, GridConfig.MAX_ROWS)
+        self.rows_spin.setValue(cfg.n_rows)
+        self.rows_spin.setToolTip("网格行数（A、B、C…，最多 26 行）")
+        form.addRow("行数:", self.rows_spin)
+
+        self.cols_spin = QSpinBox()
+        self.cols_spin.setRange(3, 50)
+        self.cols_spin.setValue(cfg.n_cols)
+        self.cols_spin.setToolTip("网格列数（1、2、3…，最多 50 列）")
+        form.addRow("列数:", self.cols_spin)
+
+        self.width_spin = QDoubleSpinBox()
+        self.width_spin.setRange(6, 40)
+        self.width_spin.setSingleStep(0.5)
+        self.width_spin.setValue(cfg.fig_width)
+        form.addRow("画布宽(英寸):", self.width_spin)
+
+        self.height_spin = QDoubleSpinBox()
+        self.height_spin.setRange(4, 30)
+        self.height_spin.setSingleStep(0.5)
+        self.height_spin.setValue(cfg.fig_height)
+        form.addRow("画布高(英寸):", self.height_spin)
+
+        # 中心点提示：随行列数实时更新
+        self.center_hint = QLabel()
+        self.center_hint.setStyleSheet("color: #4169E1; font-weight: bold;")
+        form.addRow("中心点:", self.center_hint)
+
+        def _update_center():
+            tmp = GridConfig(self.rows_spin.value(), self.cols_spin.value(),
+                             self.width_spin.value(), self.height_spin.value())
+            self.center_hint.setText(tmp.center_label)
+        self.rows_spin.valueChanged.connect(_update_center)
+        self.cols_spin.valueChanged.connect(_update_center)
+        self.width_spin.valueChanged.connect(_update_center)
+        self.height_spin.valueChanged.connect(_update_center)
+        _update_center()
+
+        self.names_check = QCheckBox("显示全部点位（在灰色未测试点位旁标注名称）")
+        self.names_check.setChecked(show_other_names)
+        form.addRow(self.names_check)
+
+        self.center_style_combo = QComboBox()
+        self.center_style_combo.addItems(["不显示", "断线（虚线）", "实线"])
+        self.center_style_combo.setCurrentIndex(
+            0 if center_line_style == "none"
+            else 1 if center_line_style == "dashed" else 2)
+        self.center_style_combo.setToolTip(
+            "中心十字线样式：不显示 / 断断续续的虚线 / 实心线")
+        form.addRow("中心线:", self.center_style_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        # 还原默认设置：行数/列数/画布宽高恢复为 GridConfig 默认值
+        reset_btn = buttons.addButton("还原默认设置", QDialogButtonBox.ResetRole)
+        reset_btn.clicked.connect(self._reset_defaults)
+        form.addRow(buttons)
+
+    def _reset_defaults(self):
+        """把行数/列数/画布宽高恢复为默认配置（7 行 × 17 列，16.0 × 9.0 英寸）"""
+        d = GridConfig()   # 无参构造即默认配置
+        self.rows_spin.setValue(d.n_rows)
+        self.cols_spin.setValue(d.n_cols)
+        self.width_spin.setValue(d.fig_width)
+        self.height_spin.setValue(d.fig_height)
+        self.center_style_combo.setCurrentIndex(0)   # 还原默认：不显示中心线
+
+    def result_config(self) -> GridConfig:
+        """返回对话框中设置的新 GridConfig"""
+        return GridConfig(self.rows_spin.value(), self.cols_spin.value(),
+                          self.width_spin.value(), self.height_spin.value())
+
+    def result_show_names(self) -> bool:
+        """返回“显示全部点位”开关状态"""
+        return self.names_check.isChecked()
+
+    def result_center_style(self) -> str:
+        """返回中心线样式："none" / "dashed" / "solid" """
+        idx = self.center_style_combo.currentIndex()
+        return "none" if idx == 0 else "dashed" if idx == 1 else "solid"
 
 
 def col_num_to_x(col_num: int, cfg: GridConfig) -> float:
@@ -784,10 +886,25 @@ def read_table_data(file_path: str):
         return None, {}, str(e)
 
 
+def write_data_csv(path: str, order: list, data: dict, notes: dict = None):
+    """把点位数据按给定顺序写入 CSV（UTF-8 BOM，Excel 直接打开不乱码）"""
+    import csv
+    with open(path, "w", encoding="utf-8-sig", newline="") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(["点位", "成功次数", "失败次数", "备注"])
+        for pid in order:
+            success, fail = data.get(pid, (0, 0))
+            note = (notes or {}).get(pid, "")
+            writer.writerow([pid, success, fail, note])
+
+
 def draw_grid_visualization(data: dict, cfg: GridConfig,
                             show_other_names: bool = False,
                             title: str = None,
-                            dpi: int = 100) -> Figure:
+                            dpi: int = 100,
+                            untested_color: str = "#A9A9A9",
+                            marked_points: set = None,
+                            center_line_style: str = "none") -> Figure:
     """绘制网格坐标图，返回 Figure 对象
 
     data: {点位ID: (成功次数, 失败次数)}
@@ -795,9 +912,13 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     show_other_names: 是否在灰色未测试点位旁标注点位名称
     title: 自定义标题；为 None 时使用默认标题（含中心点）
     dpi:  渲染分辨率；输出报告时传 200 保证清晰度
+    untested_color: 未测试点位填充色；界面初始化（无点位）为黑色，
+                    自动插入画布点位后为灰色
+    marked_points: 需要黄色空心圈注的点位 ID 集合（数据表右键标注）
+    center_line_style: 中心线样式（"none" 不显示 / "dashed" 断线 / "solid" 实线）
     """
     if title is None:
-        title = f"网格测试点位可视化 (中心点: {cfg.center_label})"
+        title = "网格点位坐标图"
     fig = Figure(figsize=(cfg.fig_width, cfg.fig_height), dpi=dpi)
     ax = fig.add_subplot(111)
 
@@ -809,16 +930,24 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
         y = row_index_to_y(i, cfg)
         ax.axhline(y=y, color="#E0E0E0", linewidth=0.5, zorder=1)
 
-    # 中心十字线
-    ax.axhline(y=0, color="#333333", linewidth=1.5, zorder=2)
-    ax.axvline(x=0, color="#333333", linewidth=1.5, zorder=2)
+    # 中心十字线（断断续续的虚线，不加粗；默认不显示，画布设置可开启）
+    if center_line_style == "dashed":
+        ax.axhline(y=0, color="#333333", linewidth=1.0,
+                   linestyle=(0, (5, 3)), zorder=2)
+        ax.axvline(x=0, color="#333333", linewidth=1.0,
+                   linestyle=(0, (5, 3)), zorder=2)
+    elif center_line_style == "solid":
+        ax.axhline(y=0, color="#333333", linewidth=1.0,
+                       linestyle="-", zorder=2)
+        ax.axvline(x=0, color="#333333", linewidth=1.0,
+                       linestyle="-", zorder=2)
 
     # 绘制所有网格点（灰色背景点）
     for row_idx, letter in enumerate(cfg.row_letters):
         for col_num in cfg.col_numbers:
             x = col_num_to_x(col_num, cfg)
             y = row_index_to_y(row_idx, cfg)
-            ax.scatter(x, y, s=80, facecolors="#D3D3D3",
+            ax.scatter(x, y, s=80, facecolors=untested_color,
                        edgecolors="#808080", linewidths=0.8, zorder=3)
             # 一键标注其余（未测试）点位名称：标在灰点下方，与上一行测试点的标签错开
             point_id = f"{letter}{col_num}"
@@ -842,15 +971,23 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
             continue
         x, y = coord
 
-        dot_color = "#FF8C00" if fail > 0 else "#4169E1"
-        ax.scatter(x, y, s=200, facecolors=dot_color,
-                   edgecolors="black", linewidths=1.8, zorder=5)
+        # 点位颜色：只有失败→红；只有成功→绿；成败兼有→橙；0/0→不画彩色（保持灰）
+        if fail > 0 and success <= 0:
+            dot_color = "#E53935"
+        elif success > 0 and fail <= 0:
+            dot_color = "#2E7D32"
+        elif success > 0 and fail > 0:
+            dot_color = "#C8E6C9"
+        else:
+            continue   # 成功=失败=0：视为无有效结果，保持灰色未测试显示
+        ax.scatter(x, y, s=320, facecolors=dot_color,
+                   edgecolors="black", linewidths=2.2, zorder=5)
 
         # 点位名称（紧贴点位下方）
         _nm = ax.annotate(
             f"{point_id}",
             xy=(x, y),
-            xytext=(x, y - 0.5),
+            xytext=(x, y - 0.6),
             color="#333333",
             fontweight="bold",
             ha="center",
@@ -862,23 +999,23 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
         _nm.set_fontweight("bold")
 
         # (成功/失败)（紧贴点位名称下方）
-        label_y = y - 1.25
-        _t1 = ax.annotate("(", xy=(x, y), xytext=(x - 0.55, label_y),
+        label_y = y - 1.45
+        _t1 = ax.annotate("(", xy=(x, y), xytext=(x - 0.70, label_y),
                           color="#666666", ha="center", va="center",
                           fontproperties=CHINESE_FONT, zorder=6)
-        _t2 = ax.annotate(f"{success}", xy=(x, y), xytext=(x - 0.15, label_y),
+        _t2 = ax.annotate(f"{success}", xy=(x, y), xytext=(x - 0.30, label_y),
                           fontweight="bold", color="#228B22",
                           ha="center", va="center",
                           fontproperties=CHINESE_FONT, zorder=6)
-        _t3 = ax.annotate("/", xy=(x, y), xytext=(x + 0.15, label_y),
+        _t3 = ax.annotate("/", xy=(x, y), xytext=(x + 0.00, label_y),
                           color="#666666", ha="center", va="center",
                           fontproperties=CHINESE_FONT, zorder=6)
         fail_weight = "bold" if fail > 0 else "normal"
-        _t4 = ax.annotate(f"{fail}", xy=(x, y), xytext=(x + 0.50, label_y),
+        _t4 = ax.annotate(f"{fail}", xy=(x, y), xytext=(x + 0.35, label_y),
                           fontweight=fail_weight, color="#DC143C",
                           ha="center", va="center",
                           fontproperties=CHINESE_FONT, zorder=6)
-        _t5 = ax.annotate(")", xy=(x, y), xytext=(x + 0.85, label_y),
+        _t5 = ax.annotate(")", xy=(x, y), xytext=(x + 0.70, label_y),
                           color="#666666", ha="center", va="center",
                           fontproperties=CHINESE_FONT, zorder=6)
         _t1.set_fontsize(13)
@@ -915,6 +1052,15 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     ax.title.set_fontsize(17)
     ax.title.set_fontweight("bold")
 
+    # 标注点位黄色空心圈（数据表右键标注，空心圈突出显示）
+    if marked_points:
+        for point_id in marked_points:
+            _mc = get_point_coord(point_id, cfg)
+            if _mc is None:
+                continue
+            ax.scatter(_mc[0], _mc[1], s=480, facecolors="none",
+                       edgecolors="#FFC107", linewidths=2.2, zorder=5.5)
+
     fig.tight_layout()
 
     # 统计信息框：左上角显示 总点位/成功点位/失败点位，右上角显示 成功次数/失败次数/成功率
@@ -945,6 +1091,23 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                              edgecolor="#AAAAAA", alpha=0.92))
     _rt.set_fontsize(12)
+    # 底部图例：点位颜色说明 + 特殊点位（黄色空心圈注），与界面图例一致
+    fig.subplots_adjust(bottom=0.09)
+    _items = [("#E53935", "仅失败", True),
+              ("#2E7D32", "仅成功", True),
+              ("#C8E6C9", "成败兼有", True),
+              ("#FFC107", "特殊标注点位", False)]
+    _lx = 0.30
+    for _color, _label, _filled in _items:
+        if _filled:
+            fig.text(_lx, 0.035, "●", color=_color, ha="center",
+                     va="center", fontsize=12)
+        else:
+            fig.text(_lx, 0.035, "○", color=_color, ha="center",
+                     va="center", fontsize=14, fontweight="bold")
+        fig.text(_lx + 0.014, 0.035, _label, color="#555555", ha="left",
+                 va="center", fontsize=9)
+        _lx += 0.098
 
     return fig
 
@@ -1011,14 +1174,15 @@ def draw_heatmap_table(data: dict, cfg: GridConfig) -> Figure:
 
 
 class DropZone(QFrame):
-    """支持拖拽文件的区域"""
+    """支持拖拽文件的区域（紧凑：固定 90px 高，图标+文字并排）"""
 
     file_dropped = Signal(str)  # 拖拽文件信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(90)
+        self.setMaximumHeight(90)
         self.setStyleSheet("""
             QFrame {
                 border: 2px dashed #AAAAAA;
@@ -1031,16 +1195,17 @@ class DropZone(QFrame):
             }
         """)
 
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(12, 4, 12, 4)
 
         self.icon_label = QLabel("\U0001F4C1")
-        self.icon_label.setStyleSheet("font-size: 48px;")
+        self.icon_label.setStyleSheet("font-size: 22px;")
         self.icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.icon_label)
 
         self.text_label = QLabel("拖拽表格文件到此处\n支持 .xlsx / .xls / .csv 格式")
-        self.text_label.setStyleSheet("font-size: 14px; color: #666666;")
+        self.text_label.setStyleSheet("font-size: 12px; color: #666666;")
         self.text_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.text_label)
 
@@ -1064,13 +1229,14 @@ class DropZone(QFrame):
 
 
 class PasteZone(QFrame):
-    """直接粘贴表格内容导入：在 Excel 复制后 Ctrl+V 到文本框，点按钮解析"""
+    """直接粘贴表格内容导入（紧凑：固定 130px 高）：Excel 复制后 Ctrl+V 到文本框，点按钮解析"""
 
     import_requested = Signal()  # 请求导入文本框中的内容
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(130)
+        self.setMaximumHeight(130)
         self.setStyleSheet("""
             QFrame {
                 border: 2px dashed #AAAAAA;
@@ -1090,25 +1256,24 @@ class PasteZone(QFrame):
         """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 6)
+        layout.setSpacing(3)
 
-        # 标题行
+        # 标题行（图标+说明单行）
         header = QHBoxLayout()
         icon_label = QLabel("\U0001F4CB")
-        icon_label.setStyleSheet("font-size: 28px;")
+        icon_label.setStyleSheet("font-size: 16px;")
         header.addWidget(icon_label)
-        text_label = QLabel("粘贴表格内容到此处\n在 Excel 复制后按 Ctrl+V，再点下方按钮导入")
-        text_label.setStyleSheet("font-size: 13px; color: #666666;")
+        text_label = QLabel("粘贴表格内容到此处（Excel 复制后按 Ctrl+V，再点导入）")
+        text_label.setStyleSheet("font-size: 12px; color: #666666;")
         header.addWidget(text_label)
         header.addStretch()
         layout.addLayout(header)
 
-        # 粘贴文本框
+        # 粘贴文本框（单行区域，可滚动）
         self.editor = QPlainTextEdit()
         self.editor.setPlaceholderText(
-            "从 Excel 复制整列后粘贴到这里（支持 Tab 或逗号分隔），例如：\n"
-            "点位\t成功次数\t失败次数\n"
-            "D9\t2\t0\n"
-            "C8\t2\t0")
+            "从 Excel 复制整列后粘贴到这里（支持 Tab/逗号分隔），例如：点位 成功次数 失败次数 / D9 2 0 / C8 2 0")
         layout.addWidget(self.editor)
 
         # 导入按钮
@@ -1118,14 +1283,55 @@ class PasteZone(QFrame):
                 background-color: #FF8C00;
                 color: white;
                 border: none;
-                padding: 6px 16px;
+                padding: 3px 10px;
                 border-radius: 4px;
-                font-size: 13px;
+                font-size: 12px;
             }
             QPushButton:hover { background-color: #E07B00; }
         """)
         self.import_btn.clicked.connect(self.import_requested.emit)
         layout.addWidget(self.import_btn, alignment=Qt.AlignRight)
+
+
+class DropZoneImportDialog(QDialog):
+    """拖拽导入对话框：拖入表格文件后自动导入并关闭"""
+
+    file_dropped = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("拖拽导入")
+        self.setMinimumSize(520, 170)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+        hint = QLabel("将表格文件拖入下方区域，松开即自动导入")
+        hint.setStyleSheet("color: #666666; font-size: 13px;")
+        lay.addWidget(hint)
+        self.zone = DropZone(self)
+        self.zone.file_dropped.connect(self._on_file)
+        lay.addWidget(self.zone)
+
+    def _on_file(self, path: str):
+        self.file_dropped.emit(path)
+        self.accept()
+
+
+class PasteZoneImportDialog(QDialog):
+    """粘贴导入对话框：粘贴表格文本，点“解析并导入”后导入并关闭"""
+
+    import_requested = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("粘贴导入")
+        self.setMinimumSize(560, 220)
+        lay = QVBoxLayout(self)
+        self.zone = PasteZone(self)
+        self.zone.import_requested.connect(self._on_request)
+        lay.addWidget(self.zone)
+
+    def _on_request(self):
+        self.import_requested.emit(self.zone.editor.toPlainText())
 
 
 # ────────────────────────────────────────────
@@ -1606,6 +1812,7 @@ class MainWindow(QMainWindow):
         self.grid_cfg = GridConfig()          # 当前网格画布配置
         self.current_chart_type = "grid"      # 当前预览的图类型
         self.show_other_names = True          # 默认标注其余（未测试）点位名称
+        self._center_line_style = "none"        # 中心线样式：none 不显示 / dashed 断线 / solid 实线
         self.chart_title = None               # 自定义网格图标题（None=默认标题）
         self._original_order = []             # 数据原始排列顺序
         self._sort_field = "original"         # 排序字段: original/point/success/fail
@@ -1617,6 +1824,8 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
+        self._has_points = False   # 表格是否已有点位信息：无→黑点，有→灰点
+        self._marked = set()       # 右键标注点位集合（黄色圈注）
         self.setWindowTitle("网格点位可视化工具")
         self.setMinimumSize(1200, 800)
 
@@ -1624,109 +1833,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # ── 顶部：左侧拖拽文件 / 右侧粘贴内容，左右对称 ──
-        top_import = QHBoxLayout()
-        top_import.setSpacing(10)
-        self.drop_zone = DropZone(self)
-        self.drop_zone.file_dropped.connect(self.load_file)
-        top_import.addWidget(self.drop_zone, 1)
+        # ── 菜单栏：导入 / 设置 / 视图 ──
+        self.import_menu = self.menuBar().addMenu("📥 导入")
+        self.import_menu.addAction("浏览文件…", self.browse_file)
+        self.import_menu.addAction("拖拽导入…", self.open_drop_import)
+        self.import_menu.addAction("粘贴导入…", self.open_paste_import)
 
-        self.paste_zone = PasteZone(self)
-        self.paste_zone.import_requested.connect(self.import_pasted_data)
-        top_import.addWidget(self.paste_zone, 1)
-        main_layout.addLayout(top_import)
+        self.settings_menu = self.menuBar().addMenu("⚙️ 设置")
+        self.settings_menu.addAction("画布设置…", self.open_canvas_settings)
 
-        # ── 文件信息栏 ──
-        file_info_layout = QHBoxLayout()
-        self.file_label = QLabel("未选择文件")
-        self.file_label.setStyleSheet("color: #666666; font-size: 12px;")
-        file_info_layout.addWidget(self.file_label)
-        file_info_layout.addStretch()
-
-        self.browse_btn = QPushButton("浏览文件...")
-        self.browse_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4169E1;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #3155B5;
-            }
-        """)
-        self.browse_btn.clicked.connect(self.browse_file)
-        file_info_layout.addWidget(self.browse_btn)
-        main_layout.addLayout(file_info_layout)
-
-        # ── 画布设置栏：行列数、画布尺寸、中心点提示、其余点位名称开关 ──
-        settings_group = QGroupBox("画布设置")
-        settings_layout = QHBoxLayout(settings_group)
-
-        settings_layout.addWidget(QLabel("行数:"))
-        self.rows_spin = QSpinBox()
-        self.rows_spin.setRange(3, GridConfig.MAX_ROWS)
-        self.rows_spin.setValue(self.grid_cfg.n_rows)
-        self.rows_spin.setToolTip("网格行数（A、B、C…，最多 26 行）")
-        settings_layout.addWidget(self.rows_spin)
-
-        settings_layout.addWidget(QLabel("列数:"))
-        self.cols_spin = QSpinBox()
-        self.cols_spin.setRange(3, 50)
-        self.cols_spin.setValue(self.grid_cfg.n_cols)
-        self.cols_spin.setToolTip("网格列数（1、2、3…，最多 50 列）")
-        settings_layout.addWidget(self.cols_spin)
-
-        settings_layout.addWidget(QLabel("画布宽(英寸):"))
-        self.width_spin = QDoubleSpinBox()
-        self.width_spin.setRange(6, 40)
-        self.width_spin.setSingleStep(0.5)
-        self.width_spin.setValue(self.grid_cfg.fig_width)
-        settings_layout.addWidget(self.width_spin)
-
-        settings_layout.addWidget(QLabel("高(英寸):"))
-        self.height_spin = QDoubleSpinBox()
-        self.height_spin.setRange(4, 30)
-        self.height_spin.setSingleStep(0.5)
-        self.height_spin.setValue(self.grid_cfg.fig_height)
-        settings_layout.addWidget(self.height_spin)
-
-        self.center_label = QLabel(f"中心点: {self.grid_cfg.center_label}")
-        self.center_label.setStyleSheet(
-            "color: #4169E1; font-weight: bold; padding: 0 10px;")
-        settings_layout.addWidget(self.center_label)
-
-        settings_layout.addStretch()
-
-        self.names_btn = QPushButton("显示全部点位")
-        self.names_btn.setCheckable(True)
-        self.names_btn.setChecked(True)   # 默认开启：网格图直接标注全部点位名称
-        self.names_btn.setToolTip("一键在全部（含灰色未测试）点位旁标注点位名称（默认开启，可点击关闭）")
-        self.names_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #F0F0F0;
-                border: 1px solid #CCCCCC;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-size: 12px;
-            }
-            QPushButton:checked {
-                background-color: #FF8C00;
-                color: white;
-                border-color: #FF8C00;
-            }
-        """)
-        self.names_btn.toggled.connect(self.toggle_other_names)
-        settings_layout.addWidget(self.names_btn)
-
-        main_layout.addWidget(settings_group)
-
-        # 画布参数变化 → 重建配置并重绘
-        for spin in (self.rows_spin, self.cols_spin,
-                     self.width_spin, self.height_spin):
-            spin.valueChanged.connect(self.apply_grid_settings)
+        self.view_menu = self.menuBar().addMenu("📊 视图")
+        self.view_grid_action = self.view_menu.addAction("网格坐标图")
+        self.view_heat_action = self.view_menu.addAction("热力图")
+        for a in (self.view_grid_action, self.view_heat_action):
+            a.setCheckable(True)
+        self.view_grid_action.setChecked(True)
+        self.view_grid_action.triggered.connect(lambda: self.show_chart("grid"))
+        self.view_heat_action.triggered.connect(lambda: self.show_chart("heatmap"))
 
         # ── 分割器：左侧数据表，右侧图表 ──
         splitter = QSplitter(Qt.Horizontal)
@@ -1735,6 +1858,12 @@ class MainWindow(QMainWindow):
         # 左侧：数据预览
         data_group = QGroupBox("数据预览")
         data_layout = QVBoxLayout(data_group)
+
+        # 数据区标题：来源/数量（由导入、新建、编辑时更新）
+        self.file_label = QLabel("未选择文件")
+        self.file_label.setStyleSheet("color: #333333; font-size: 12px; font-weight: bold;")
+        data_layout.addWidget(self.file_label)
+
         self.data_table = EditableTableWidget()
         self.data_table.setStyleSheet("""
             QTableWidget {
@@ -1753,19 +1882,25 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
             }
         """)
+        # 点位列右键标注：黄色单元格背景 + 网格图黄色空心圈
+        self.data_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.data_table.customContextMenuRequested.connect(self._on_table_context_menu)
         # 数据表创建/编辑按钮栏（新建空表、追加点位行）
         edit_bar = QHBoxLayout()
-        self.new_table_btn = QPushButton("新建数据表")
-        self.new_table_btn.setToolTip("清空当前数据，从空白表格开始录入新数据")
-        self.add_row_btn = QPushButton("添加点位行")
-        self.add_row_btn.setToolTip("批量添加点位行：点击后输入行数，一次追加多行空行")
-        self.copy_table_btn = QPushButton("⧉ 复制表格")
-        self.copy_table_btn.setToolTip("一键复制整个数据表（含列名与单元格内容）到剪贴板，"
-                                       "可直接粘贴到 Excel 等其他表格软件并保留格式")
+        self.new_table_btn = QPushButton("📋 新建数据表")
+        self.new_table_btn.setToolTip("下拉菜单：自动插入画布点位 / 新建点位行 / 添加点位行")
+        self.new_table_menu = QMenu(self)
+        # 默认首选：自动插入画布点位（按网格行数×列数全量生成）
+        self.new_table_auto_action = self.new_table_menu.addAction(
+            "自动插入画布点位", self.auto_insert_points)
+        self.new_table_menu.addAction("新建点位行", self.new_data_table)
+        self.new_table_menu.addAction("添加点位行…", self.add_data_row)
+        self.new_table_menu.setDefaultAction(self.new_table_auto_action)
+        self.new_table_btn.setMenu(self.new_table_menu)
         self.report_btn = QPushButton("🖼 报告总结")
         self.report_btn.setToolTip("点击弹出功能菜单：全屏预览 / 复制到剪贴板 / 另存为")
         self.report_btn.setEnabled(False)
-        self.highlight_btn = QPushButton("🎨 高亮显示设置")
+        self.highlight_btn = QPushButton("🎨 高亮设置")
         self.highlight_btn.setToolTip("下拉菜单：文字颜色 / 背景颜色 / 清除所有高亮显示（按点位名绑定，排序后跟随点位）")
         self.highlight_menu = QMenu(self)
         self.highlight_menu.addAction("🅰 文字颜色", self.apply_cell_text_color)
@@ -1777,7 +1912,7 @@ class MainWindow(QMainWindow):
         self.paint_btn.setToolTip("先选中带有文字/背景颜色的源单元格，点击本按钮激活格式刷，"
                                   "再点击目标单元格即可复制格式（可连续刷，再次点击按钮取消）")
         self.paint_btn.toggled.connect(self.toggle_format_painter)
-        for btn in [self.new_table_btn, self.add_row_btn, self.copy_table_btn,
+        for btn in [self.new_table_btn,
                     self.report_btn, self.highlight_btn, self.paint_btn]:
             btn.setStyleSheet("""
                 QPushButton {
@@ -1791,9 +1926,6 @@ class MainWindow(QMainWindow):
                     background-color: #E0E0E0;
                 }
             """)
-        self.new_table_btn.clicked.connect(self.new_data_table)
-        self.add_row_btn.clicked.connect(self.add_data_row)
-        self.copy_table_btn.clicked.connect(self.copy_table)
         # 报告总结功能菜单：全屏预览 / 复制到剪贴板 / 另存为
         self.report_menu = QMenu(self)
         self.report_menu.addAction("⛶ 全屏预览", self.report_preview)
@@ -1801,8 +1933,6 @@ class MainWindow(QMainWindow):
         self.report_menu.addAction("💾 另存为", self.report_save_as)
         self.report_btn.setMenu(self.report_menu)
         edit_bar.addWidget(self.new_table_btn)
-        edit_bar.addWidget(self.add_row_btn)
-        edit_bar.addWidget(self.copy_table_btn)
         edit_bar.addWidget(self.report_btn)
         edit_bar.addWidget(self.highlight_btn)
         edit_bar.addWidget(self.paint_btn)
@@ -1824,31 +1954,23 @@ class MainWindow(QMainWindow):
         self.sort_field_combo.currentIndexChanged.connect(self.on_sort_field_changed)
         sort_bar.addWidget(self.sort_field_combo)
 
-        self.sort_asc_btn = QPushButton("升序")
-        self.sort_desc_btn = QPushButton("降序")
-        for btn in [self.sort_asc_btn, self.sort_desc_btn]:
-            btn.setCheckable(True)
-            btn.setToolTip("排序方向；再点一次取消，恢复原始顺序")
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #F0F0F0;
-                    border: 1px solid #CCCCCC;
-                    padding: 5px 14px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                }
-                QPushButton:checked {
-                    background-color: #4169E1;
-                    color: white;
-                    border-color: #4169E1;
-                }
-            """)
-        self.sort_asc_btn.clicked.connect(
-            lambda checked: self.on_sort_clicked("asc", checked))
-        self.sort_desc_btn.clicked.connect(
-            lambda checked: self.on_sort_clicked("desc", checked))
-        sort_bar.addWidget(self.sort_asc_btn)
-        sort_bar.addWidget(self.sort_desc_btn)
+        self.sort_dir_btn = QPushButton("排序方向")
+        self.sort_dir_menu = QMenu(self)
+        self.sort_dir_menu.addAction("升序", lambda: self.on_sort_direction("asc"))
+        self.sort_dir_menu.addAction("降序", lambda: self.on_sort_direction("desc"))
+        self.sort_dir_btn.setMenu(self.sort_dir_menu)
+        self.sort_dir_btn.setToolTip("选择排序方向：升序 / 降序")
+        self.sort_dir_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #F0F0F0;
+                border: 1px solid #CCCCCC;
+                padding: 5px 14px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover { background-color: #E0E0E0; }
+        """)
+        sort_bar.addWidget(self.sort_dir_btn)
         sort_bar.addStretch()
 
         self.rate_fullscreen_btn = QPushButton("⛶ 全屏显示")
@@ -1870,7 +1992,7 @@ class MainWindow(QMainWindow):
         sort_bar.addWidget(self.rate_fullscreen_btn)
 
         self.export_btn = QPushButton("导出数据")
-        self.export_btn.setToolTip("导出当前点位数据（含备注列）为 CSV")
+        self.export_btn.setToolTip("下拉菜单：复制表格 / 导出为 CSV（含备注列）")
         self.export_btn.setStyleSheet("""
             QPushButton {
                 background-color: #228B22;
@@ -1885,7 +2007,11 @@ class MainWindow(QMainWindow):
         """)
         self.export_btn.setEnabled(False)
         self.report_btn.setEnabled(False)
-        self.export_btn.clicked.connect(self.export_data)
+        # 导出数据下拉菜单：复制表格 / 导出 CSV
+        self.export_menu = QMenu(self)
+        self.export_menu.addAction("⧉ 复制表格", self.copy_table)
+        self.export_menu.addAction("💾 导出 CSV", self.export_data)
+        self.export_btn.setMenu(self.export_menu)
         sort_bar.addWidget(self.export_btn)
         data_layout.addLayout(sort_bar)
 
@@ -1902,43 +2028,19 @@ class MainWindow(QMainWindow):
         chart_group = QGroupBox("图表预览")
         chart_layout = QVBoxLayout(chart_group)
 
+        # ── 图表预览顶部一行：标题输入 + 保存图片 + 预览对比（同一水平线，与下方图片区隔开）──
         self.chart_tabs = QWidget()
+        # 垂直方向固定内容高度：避免被上层 QVBoxLayout 拉高导致工具行垂直居中下沉
+        self.chart_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         tab_layout = QHBoxLayout(self.chart_tabs)
         tab_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.grid_btn = QPushButton("网格坐标图")
-        self.heatmap_btn = QPushButton("热力图")
-        for btn in [self.grid_btn, self.heatmap_btn]:
-            btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #F0F0F0;
-                    border: 1px solid #CCCCCC;
-                    padding: 6px 12px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                }
-                QPushButton:checked {
-                    background-color: #4169E1;
-                    color: white;
-                    border-color: #4169E1;
-                }
-            """)
-            btn.setCheckable(True)
-        self.grid_btn.setChecked(True)
-        self.grid_btn.clicked.connect(lambda: self.show_chart("grid"))
-        self.heatmap_btn.clicked.connect(lambda: self.show_chart("heatmap"))
-        tab_layout.addWidget(self.grid_btn)
-        tab_layout.addWidget(self.heatmap_btn)
-
-        # 图表标题编辑（应用于网格坐标图的全局显示）
-        tab_layout.addSpacing(8)
-        tab_layout.addWidget(QLabel("标题:"))
-        self.title_edit = QLineEdit("网格测试点位可视化")
-        self.title_edit.setMaximumWidth(240)
+        tab_layout.addWidget(QLabel("网格图标题:"))
+        self.title_edit = QLineEdit("网格点位坐标图")
+        self.title_edit.setMaximumWidth(280)
         self.title_edit.setToolTip("编辑网格坐标图标题；清空或改回默认值则使用默认标题（含中心点）")
         self.title_edit.textChanged.connect(self.on_title_changed)
         tab_layout.addWidget(self.title_edit)
-
         tab_layout.addStretch()
 
         self.copy_btn = QPushButton("保存图片")
@@ -1991,22 +2093,80 @@ class MainWindow(QMainWindow):
         self.chart_frame = QFrame()
         self.chart_frame.setStyleSheet("border: 1px solid #E0E0E0; background-color: white;")
         self.chart_layout_inner = QVBoxLayout(self.chart_frame)
-        self.chart_layout_inner.setAlignment(Qt.AlignCenter)
-        self.placeholder_label = QLabel("请先导入数据文件")
-        self.placeholder_label.setStyleSheet("color: #999999; font-size: 14px;")
-        self.chart_layout_inner.addWidget(self.placeholder_label)
+        # 图表预览使用位图渲染（QLabel + QPixmap），绕开 matplotlib Qt 后端与
+        # PySide6 组合下的 showEvent/paintEvent 兼容性崩溃
+        self.chart_view = QLabel("请先导入数据文件")
+        self.chart_view.setAlignment(Qt.AlignCenter)
+        self.chart_view.setStyleSheet("color: #999999; font-size: 14px;")
+        # 填满整个预览区：位图按预览区尺寸等比缩放居中显示，放大图表预览
+        self.chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.chart_layout_inner.addWidget(self.chart_view)
+        self._chart_pixmap = None
         chart_layout.addWidget(self.chart_frame)
+        # 图表预览下方：点位颜色图例 + 特殊点位（黄色空心圈注）说明
+        self.legend_bar = QWidget()
+        legend_layout = QHBoxLayout(self.legend_bar)
+        legend_layout.setContentsMargins(2, 6, 2, 0)
+        legend_layout.setSpacing(4)
+        for color, label in (("#E53935", "仅失败"),
+                             ("#2E7D32", "仅成功"),
+                             ("#C8E6C9", "成败兼有")):
+            swatch = QLabel()
+            swatch.setFixedSize(14, 14)
+            swatch.setStyleSheet(
+                f"background-color: {color}; border-radius: 7px; "
+                f"border: 1px solid #808080;")
+            txt = QLabel(label)
+            txt.setStyleSheet("color: #666666; font-size: 12px;")
+            legend_layout.addWidget(swatch)
+            legend_layout.addWidget(txt)
+            legend_layout.addSpacing(8)
+        ring = QLabel()
+        ring.setFixedSize(14, 14)
+        ring.setStyleSheet(
+            "border: 2px solid #FFC107; border-radius: 6px; "
+            "background-color: transparent;")
+        ring_txt = QLabel("特殊标注点位")
+        ring_txt.setStyleSheet("color: #666666; font-size: 12px;")
+        legend_layout.addWidget(ring)
+        legend_layout.addWidget(ring_txt)
+        legend_layout.addStretch()
+        chart_layout.addWidget(self.legend_bar)
 
         splitter.addWidget(chart_group)
-        splitter.setSizes([400, 800])
+        splitter.setSizes([500, 500])
 
-        # ── 状态栏 ──
+        # ── 状态栏：普通消息在左侧，当前图类型提示固定显示在主界面右下角 ──
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪 - 请拖拽或选择表格文件")
+        self.chart_type_label = QLabel("当前：网格坐标图")
+        self.chart_type_label.setStyleSheet("color: #666666; font-size: 12px; padding: 0 6px;")
+        self.status_bar.addPermanentWidget(self.chart_type_label)
 
         # Ctrl+Z 撤销上一次表格编辑/粘贴（编辑器中输入文本的撤销不受影响）
         QShortcut(QKeySequence("Ctrl+Z"), self, self.undo_last_edit)
+
+        # 启动即按当前行数/列数实时生成网格坐标图（无数据也显示空网格）
+        self.show_chart("grid")
+
+    def open_drop_import(self):
+        """弹出拖拽导入对话框；拖入文件后自动导入"""
+        dlg = DropZoneImportDialog(self)
+        dlg.file_dropped.connect(self.load_file)
+        dlg.exec()
+
+    def open_paste_import(self):
+        """弹出粘贴导入对话框；解析成功后关闭"""
+        dlg = PasteZoneImportDialog(self)
+        dlg.import_requested.connect(
+            lambda text: self._import_pasted_text(dlg, text))
+        dlg.exec()
+
+    def _import_pasted_text(self, dlg: PasteZoneImportDialog, text: str):
+        """对话框解析回调：成功则关闭对话框"""
+        if self.import_pasted_data(text):
+            dlg.accept()
 
     def browse_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -2026,14 +2186,14 @@ class MainWindow(QMainWindow):
         self.current_file = file_path
         self._apply_data(data, f"当前文件: {os.path.basename(file_path)}", notes)
 
-    def import_pasted_data(self):
+    def import_pasted_data(self, text: str):
         """解析粘贴的表格文本并导入：
         优先识别纵向堆叠格式（点位/成功次数/失败次数三列竖排），
-        其次支持 Excel 复制的 Tab 或逗号分隔格式"""
-        text = self.paste_zone.editor.toPlainText()
+        其次支持 Excel 复制的 Tab 或逗号分隔格式。
+        返回 True 表示导入成功。"""
         if not text.strip():
-            QMessageBox.warning(self, "提示", "请先在右侧粘贴表格内容")
-            return
+            QMessageBox.warning(self, "提示", "请先粘贴表格内容")
+            return False
 
         # 1) 纵向堆叠格式自动识别（含备注）
         result = parse_vertical_stacked(text)
@@ -2041,14 +2201,14 @@ class MainWindow(QMainWindow):
             data, notes = result
             self.current_file = None
             self._apply_data(data, "数据来源: 剪贴板粘贴", notes)
-            return
+            return True
 
         # 2) 常规表格格式：Tab / 逗号 / 空格（含框选复制粘贴的单行循环格式）
         try:
             rows = _parse_paste_rows(text)
             if rows is None:
                 QMessageBox.warning(self, "错误", "解析粘贴内容失败: 无法识别表格格式")
-                return
+                return False
             header_n = len(rows[0])
             body = rows[1:]
             if body and any(len(r) != header_n for r in body):
@@ -2064,30 +2224,31 @@ class MainWindow(QMainWindow):
                         self, "错误",
                         "解析粘贴内容失败: 数据列数（%d 列）与表头列数（%d 列）不匹配"
                         % (len(body[0]) if body else 0, header_n))
-                    return
+                    return False
             df = pd.DataFrame(body, columns=rows[0])
             data, notes, error = dataframe_to_data(df)
         except Exception as e:
             QMessageBox.warning(self, "错误", f"解析粘贴内容失败:\n{e}")
-            return
+            return False
         if error:
             QMessageBox.warning(self, "错误", f"解析粘贴内容失败:\n{error}")
-            return
+            return False
 
         self.current_file = None
         self._apply_data(data, "数据来源: 剪贴板粘贴", notes)
+        return True
 
     def _apply_data(self, data: dict, source_label: str, notes: dict = None):
         """数据加载成功后的统一处理：标签、数据表、按钮、图表、状态栏"""
         self.current_data = data
         self._notes = dict(notes or {})        # 导入数据备注（第 4 列）
         self._cell_style = {}                  # 新数据集清空单元格颜色
+        self._marked = set()                   # 新数据集清空标注（点位已不同）
         self._original_order = list(data.keys())   # 保存原始排列顺序
         self._sort_field = "original"              # 默认按原始数据排列
         self._sort_state = "original"
         self.sort_field_combo.setCurrentIndex(0)
-        self.sort_asc_btn.setChecked(False)
-        self.sort_desc_btn.setChecked(False)
+
 
         # 更新文件标签
         self.file_label.setText(f"{source_label}  |  共 {len(data)} 个点位")
@@ -2121,18 +2282,12 @@ class MainWindow(QMainWindow):
         if self._sort_field == "original":
             # 切回原始顺序时同时取消方向选中
             self._sort_state = "original"
-            self.sort_asc_btn.setChecked(False)
-            self.sort_desc_btn.setChecked(False)
+
         self._refresh_table_rows()
 
-    def on_sort_clicked(self, direction: str, checked: bool):
-        """升序/降序排序（可点选按钮互斥）；取消选中恢复原始顺序"""
-        other = self.sort_desc_btn if direction == "asc" else self.sort_asc_btn
-        if checked:
-            other.setChecked(False)
-            self._sort_state = direction
-        else:
-            self._sort_state = "original"
+    def on_sort_direction(self, direction: str):
+        """升序/降序排序（下拉菜单选择方向）"""
+        self._sort_state = direction
         self._refresh_table_rows()
 
     def toggle_format_painter(self, checked: bool):
@@ -2191,7 +2346,7 @@ class MainWindow(QMainWindow):
     def clear_all_highlights(self):
         """清除所有单元格的文字/背景颜色高亮"""
         if not self._cell_style:
-            QMessageBox.information(self, "高亮显示设置", "当前没有高亮颜色需要清除")
+            QMessageBox.information(self, "高亮设置", "当前没有高亮颜色需要清除")
             return
         self._cell_style = {}
         for r in range(self.data_table.rowCount()):
@@ -2250,6 +2405,50 @@ class MainWindow(QMainWindow):
                 it.setForeground(QBrush())
                 it.setBackground(QBrush())
 
+    def _on_table_context_menu(self, pos):
+        """点位列单元格右键菜单：标注/取消标注点位（黄色圈注）"""
+        item = self.data_table.itemAt(pos)
+        if item is None or item.column() != 0:
+            return
+        pid = item.text().strip()
+        if not pid:
+            return
+        menu = QMenu(self)
+        if pid in self._marked:
+            menu.addAction("取消标注（去除黄色圈注）", lambda: self._unmark_point(pid))
+        else:
+            menu.addAction("标注此点位（黄色圈注）", lambda: self._mark_point(pid))
+        menu.exec(self.data_table.viewport().mapToGlobal(pos))
+
+    def _mark_point(self, pid: str):
+        """标注点位：单元格黄底 + 网格图黄色空心圈"""
+        self._marked.add(pid)
+        for r in range(self.data_table.rowCount()):
+            it = self.data_table.item(r, 0)
+            if it is not None and it.text().strip() == pid:
+                it.setBackground(QBrush(QColor("#FFEB3B")))
+                break
+        self.show_chart(self.current_chart_type)
+
+    def _unmark_point(self, pid: str):
+        """取消标注：恢复单元格原样式并去掉黄色空心圈"""
+        self._marked.discard(pid)
+        for r in range(self.data_table.rowCount()):
+            it = self.data_table.item(r, 0)
+            if it is not None and it.text().strip() == pid:
+                self._apply_cell_styles_to_row(r, pid)
+                break
+        self.show_chart(self.current_chart_type)
+
+    def _apply_marked_style(self):
+        """表格重建后恢复已标注点位的黄色单元格背景"""
+        for r in range(self.data_table.rowCount()):
+            it = self.data_table.item(r, 0)
+            if it is None:
+                continue
+            if it.text().strip() in self._marked:
+                it.setBackground(QBrush(QColor("#FFEB3B")))
+
     def _refresh_table_rows(self):
         """按当前排序字段与方向填充数据表行（点数/成功次数/失败次数/备注）"""
         if not self.current_data:
@@ -2283,6 +2482,7 @@ class MainWindow(QMainWindow):
                 self._apply_cell_styles_to_row(row, point_id)
         finally:
             self._updating = False
+        self._apply_marked_style()   # 重建后恢复标注黄底
 
     def _update_status_bar(self):
         """按当前数据刷新主界面左下角状态栏"""
@@ -2300,14 +2500,14 @@ class MainWindow(QMainWindow):
 
     def _clear_chart_placeholder(self):
         """清空图表预览区并显示占位提示"""
-        for i in reversed(range(self.chart_layout_inner.count())):
-            widget = self.chart_layout_inner.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
-        self.chart_layout_inner.addWidget(self.placeholder_label)
+        self._chart_pixmap = None
+        self.chart_view.setPixmap(QPixmap())
+        self.chart_view.setText("请先导入数据文件")
 
     def new_data_table(self):
         """新建空数据表：清空当前数据，从空白表格开始录入"""
+        self._has_points = False
+        self._marked = set()                  # 新建空表清空标注
         self.current_data = {}
         self._notes = {}
         self._original_order = []
@@ -2315,8 +2515,7 @@ class MainWindow(QMainWindow):
         self._sort_field = "original"
         self._sort_state = "original"
         self.sort_field_combo.setCurrentIndex(0)
-        self.sort_asc_btn.setChecked(False)
-        self.sort_desc_btn.setChecked(False)
+
         self.current_file = None
         self._undo_stack = []
 
@@ -2334,7 +2533,7 @@ class MainWindow(QMainWindow):
 
         self.file_label.setText("新建数据表（空白，可直接在表格中录入）")
         self.file_label.setStyleSheet("color: #333333; font-size: 12px; font-weight: bold;")
-        self._clear_chart_placeholder()
+        self.show_chart("grid")
         self.fullscreen_btn.setEnabled(False)
         self.copy_btn.setEnabled(False)
         self.rate_fullscreen_btn.setEnabled(False)
@@ -2360,6 +2559,60 @@ class MainWindow(QMainWindow):
         finally:
             self._updating = False
         self.data_table.scrollToBottom()
+
+    def auto_insert_points(self):
+        """自动插入点位：按当前网格行数×列数生成全部点位，自然升序填入点位列。
+
+        - 点位 ID 按行字母+列数字全组合（如 7×17 → A1..A17, B1..B17, .. G17），
+          使用 natural_sort_key 自然升序（A2 < A10）。
+        - 表格行数不足时自动扩展；点位列已有内容时先确认再整列覆盖。
+        """
+        points = []
+        for letter in self.grid_cfg.row_letters:
+            for col_num in self.grid_cfg.col_numbers:
+                points.append(f"{letter}{col_num}")
+        points.sort(key=natural_sort_key)
+
+        # 确保表格具备 4 列（全新窗口空表时列数为 0，需先建列才能写入点位列）
+        if self.data_table.columnCount() < 4:
+            self.data_table.setColumnCount(4)
+            self.data_table.setHorizontalHeaderLabels(["点位", "成功次数", "失败次数", "备注"])
+
+        # 点位列已有内容 → 确认覆盖
+        existing = []
+        for r in range(self.data_table.rowCount()):
+            it = self.data_table.item(r, 0)
+            if it is not None and it.text().strip():
+                existing.append(it.text().strip())
+        if existing:
+            ret = QMessageBox.question(
+                self, "自动插入点位",
+                f"点位列已存在 {len(existing)} 个点位，是否整列覆盖为网格点位"
+                f"（{len(points)} 个，升序）？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ret != QMessageBox.Yes:
+                return
+
+        self._updating = True
+        try:
+            n = max(self.data_table.rowCount(), len(points))
+            self.data_table.setRowCount(n)
+            for r in range(n):
+                if r < len(points):
+                    self.data_table.setItem(r, 0, QTableWidgetItem(points[r]))
+                else:
+                    # 覆盖模式下超出点位数的行清空点位列
+                    it = self.data_table.item(r, 0)
+                    if it is not None:
+                        it.setText("")
+            self.data_table.scrollToBottom()
+        finally:
+            self._updating = False
+        self._apply_marked_style()   # 重建后恢复标注黄底
+        self._sync_from_table()
+        self.status_bar.showMessage(
+            f"已自动插入 {len(points)} 个点位（{self.grid_cfg.n_rows} 行 × "
+            f"{self.grid_cfg.n_cols} 列，升序）")
 
     def _on_paste_started(self):
         """批量粘贴开始：置防递归标志，避免每个单元格触发同步"""
@@ -2415,7 +2668,7 @@ class MainWindow(QMainWindow):
                     QHeaderView.Stretch)
             finally:
                 self._updating = False
-            self._clear_chart_placeholder()
+            self.show_chart("grid")
             self.fullscreen_btn.setEnabled(False)
             self.copy_btn.setEnabled(False)
             self.rate_fullscreen_btn.setEnabled(False)
@@ -2461,6 +2714,14 @@ class MainWindow(QMainWindow):
     def _sync_from_table(self):
         """以数据表为数据源回读：更新 current_data 与备注，保留原始顺序，实时刷新图表"""
         rows = self.data_table.rowCount()
+        # 是否已生成点位信息（表格点位列存在任意点位名）：
+        # 无任何点位 → 界面初始化，未测试点显示黑色；已生成点位 → 显示灰色
+        self._has_points = False
+        for r in range(rows):
+            _pid_it = self.data_table.item(r, 0)
+            if _pid_it is not None and _pid_it.text().strip():
+                self._has_points = True
+                break
         new_data = {}
         new_notes = {}
         seen = []
@@ -2475,8 +2736,14 @@ class MainWindow(QMainWindow):
             s_item = self.data_table.item(r, 1)
             f_item = self.data_table.item(r, 2)
             n_item = self.data_table.item(r, 3)
-            s_text = (s_item.text().strip() if s_item else "") or "0"
-            f_text = (f_item.text().strip() if f_item else "") or "0"
+            s_raw = (s_item.text().strip() if s_item else "")
+            f_raw = (f_item.text().strip() if f_item else "")
+            if not s_raw and not f_raw:
+                # 成功/失败均未填写 → 视为未测试点位：不进入数据，
+                # 图表上保持灰色网格点（自动插入点位后的初始状态）
+                continue
+            s_text = s_raw or "0"
+            f_text = f_raw or "0"
             if not s_text.lstrip("-").isdigit() or not f_text.lstrip("-").isdigit():
                 continue
             s = int(s_text)
@@ -2511,7 +2778,7 @@ class MainWindow(QMainWindow):
             self.show_chart(self.current_chart_type)
         else:
             self.file_label.setText("数据表编辑（当前无有效点位，请录入点数）")
-            self._clear_chart_placeholder()
+            self.show_chart("grid")
             self.fullscreen_btn.setEnabled(False)
             self.copy_btn.setEnabled(False)
             self.rate_fullscreen_btn.setEnabled(False)
@@ -2681,7 +2948,9 @@ class MainWindow(QMainWindow):
         # 2) 网格坐标图（200dpi，复用现有绘制逻辑与标题/全部点位标注）
         gfig = draw_grid_visualization(
             self.current_data, self.grid_cfg, self.show_other_names,
-            self.chart_title, dpi=200)
+            self.chart_title, dpi=200, untested_color=self._untested_color,
+            marked_points=self._marked,
+            center_line_style=self._center_line_style)
         gfig.set_canvas(FigureCanvasAgg(gfig))
         gfig.canvas.draw()
         gbuf = np.asarray(gfig.canvas.buffer_rgba())[:, :, :3]
@@ -2728,26 +2997,25 @@ class MainWindow(QMainWindow):
             order = sorted(order, key=key, reverse=(state == "desc"))
         return order
 
-    def apply_grid_settings(self):
-        """根据画布设置控件重建 GridConfig，并刷新中心点提示与图表"""
-        self.grid_cfg = GridConfig(
-            n_rows=self.rows_spin.value(),
-            n_cols=self.cols_spin.value(),
-            fig_width=self.width_spin.value(),
-            fig_height=self.height_spin.value(),
-        )
-        self.center_label.setText(f"中心点: {self.grid_cfg.center_label}")
-        if self.current_data:
+    def open_canvas_settings(self):
+        """弹出画布设置对话框；确定后重建 GridConfig 并实时重绘图表"""
+        dlg = CanvasSettingsDialog(self.grid_cfg, self.show_other_names,
+                                   self._center_line_style, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.grid_cfg = dlg.result_config()
+            self.show_other_names = dlg.result_show_names()
+            self._center_line_style = dlg.result_center_style()
+            # 无数据时也绘制空网格图，实现行数/列数实时预览
             self.show_chart(self.current_chart_type)
 
     def on_title_changed(self, text: str):
         """标题编辑：非空且非默认值则用作自定义标题，否则回退默认标题"""
         stripped = text.strip()
-        if stripped and stripped != "网格测试点位可视化":
+        if stripped and stripped != "网格点位坐标图":
             self.chart_title = stripped
         else:
             self.chart_title = None
-        if self.current_data and self.current_chart_type == "grid":
+        if self.current_chart_type == "grid":
             self.show_chart("grid")
 
     def copy_image(self):
@@ -2759,7 +3027,9 @@ class MainWindow(QMainWindow):
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
-                self.chart_title)
+                self.chart_title, untested_color=self._untested_color,
+                marked_points=self._marked,
+                center_line_style=self._center_line_style)
         try:
             buf = BytesIO()
             fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
@@ -2782,7 +3052,9 @@ class MainWindow(QMainWindow):
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
-                self.chart_title)
+                self.chart_title, untested_color=self._untested_color,
+                marked_points=self._marked,
+                center_line_style=self._center_line_style)
             default_name = f"{base}.png"
         path, _ = QFileDialog.getSaveFileName(
             self, "保存图片", default_name, "PNG 图片 (*.png)")
@@ -2804,7 +3076,7 @@ class MainWindow(QMainWindow):
     def toggle_other_names(self, checked: bool):
         """一键显示/隐藏其余（未测试）点位的名称"""
         self.show_other_names = checked
-        if self.current_data and self.current_chart_type == "grid":
+        if self.current_chart_type == "grid":
             self.show_chart("grid")
 
     def open_fullscreen_chart(self):
@@ -2817,7 +3089,9 @@ class MainWindow(QMainWindow):
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
-                self.chart_title)
+                self.chart_title, untested_color=self._untested_color,
+                marked_points=self._marked,
+                center_line_style=self._center_line_style)
             title = "网格坐标图 - 全屏"
         dlg = FullscreenChartDialog(fig, title, self)
         dlg.showFullScreen()
@@ -2845,32 +3119,71 @@ class MainWindow(QMainWindow):
         dlg = CompareResultDialog(img, len(paths), self)
         dlg.exec()
 
-    def show_chart(self, chart_type: str):
-        """显示图表预览"""
-        if not self.current_data:
-            return
-        self.current_chart_type = chart_type
+    @property
+    def _untested_color(self) -> str:
+        """未测试点位填充色：已生成点位（自动插入/导入）→ 灰色；尚未生成 → 黑色"""
+        return "#A9A9A9" if self._has_points else "#000000"
 
-        # 清除旧图表
-        for i in reversed(range(self.chart_layout_inner.count())):
-            widget = self.chart_layout_inner.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
+    def show_chart(self, chart_type: str):
+        """显示图表预览。
+
+        无数据时也绘制空网格坐标图（随行数/列数实时刷新）；
+        热力图需要数据，无数据时提示并切回网格坐标图。
+        图表一律位图渲染到 QLabel，避免 matplotlib Qt 后端在
+        PySide6 下的 showEvent/paintEvent 兼容性崩溃。
+        """
+        if chart_type == "heatmap" and not self.current_data:
+            QMessageBox.information(self, "提示", "热力图需要先导入或录入点位数据")
+            chart_type = "grid"
+        self.current_chart_type = chart_type
+        # 同步“视图”菜单勾选与当前图类型提示
+        self.view_grid_action.setChecked(chart_type == "grid")
+        self.view_heat_action.setChecked(chart_type == "heatmap")
+        self.chart_type_label.setText("当前：" + ("热力图" if chart_type == "heatmap" else "网格坐标图"))
 
         if chart_type == "grid":
-            self.grid_btn.setChecked(True)
-            self.heatmap_btn.setChecked(False)
             fig = draw_grid_visualization(
-                self.current_data, self.grid_cfg, self.show_other_names,
-                self.chart_title)
+                self.current_data or {}, self.grid_cfg, self.show_other_names,
+                self.chart_title, untested_color=self._untested_color,
+                marked_points=self._marked,
+                center_line_style=self._center_line_style)
         else:
-            self.grid_btn.setChecked(False)
-            self.heatmap_btn.setChecked(True)
             fig = draw_heatmap_table(self.current_data, self.grid_cfg)
 
-        canvas = FigureCanvas(fig)
-        canvas.setStyleSheet("background-color: white;")
-        self.chart_layout_inner.addWidget(canvas)
+        self._show_fig(fig)
+
+    def _fig_to_qpixmap(self, fig):
+        """把 matplotlib Figure 位图渲染为 QPixmap（Agg 后端，与 Qt 窗口无关）"""
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from PIL import Image as _PILImage
+        fig.set_canvas(FigureCanvasAgg(fig))
+        fig.canvas.draw()
+        buf = np.asarray(fig.canvas.buffer_rgba())[:, :, :3]
+        pil_img = _PILImage.fromarray(buf).convert("RGB")
+        w, h = pil_img.size
+        qimg = QImage(pil_img.tobytes(), w, h, w * 3, QImage.Format_RGB888)
+        return QPixmap.fromImage(qimg)
+
+    def _show_fig(self, fig):
+        """渲染 Figure 并在预览区显示"""
+        self.chart_view.setText("")
+        self._chart_pixmap = self._fig_to_qpixmap(fig)
+        self._update_chart_view()
+
+    def _update_chart_view(self):
+        """按预览区当前尺寸等比缩放显示位图"""
+        pm = getattr(self, "_chart_pixmap", None)
+        if pm is not None and not pm.isNull():
+            scaled = pm.scaled(self.chart_view.size(), Qt.KeepAspectRatio,
+                               Qt.SmoothTransformation)
+            self.chart_view.setPixmap(scaled)
+        else:
+            self.chart_view.setPixmap(QPixmap())
+
+    def resizeEvent(self, event):
+        """窗口/预览区尺寸变化时重算位图缩放"""
+        super().resizeEvent(event)
+        self._update_chart_view()
 
 """全局应用样式（原 main() 中的 setStyleSheet 内容原样提取）"""
 
