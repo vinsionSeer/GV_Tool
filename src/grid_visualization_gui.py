@@ -917,8 +917,6 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     marked_points: 需要黄色空心圈注的点位 ID 集合（数据表右键标注）
     center_line_style: 中心线样式（"none" 不显示 / "dashed" 断线 / "solid" 实线）
     """
-    if title is None:
-        title = "网格点位坐标图"
     fig = Figure(figsize=(cfg.fig_width, cfg.fig_height), dpi=dpi)
     ax = fig.add_subplot(111)
 
@@ -1048,9 +1046,10 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     ax.set_xlim(x_left, x_right)
     ax.set_ylim(y_bottom, y_top)
 
-    ax.set_title(title, pad=18, fontproperties=CHINESE_FONT)
-    ax.title.set_fontsize(17)
-    ax.title.set_fontweight("bold")
+    if title:
+        ax.set_title(title, pad=18, fontproperties=CHINESE_FONT)
+        ax.title.set_fontsize(17)
+        ax.title.set_fontweight("bold")
 
     # 标注点位黄色空心圈（数据表右键标注，空心圈突出显示）
     if marked_points:
@@ -1061,7 +1060,8 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
             ax.scatter(_mc[0], _mc[1], s=480, facecolors="none",
                        edgecolors="#FFC107", linewidths=2.2, zorder=5.5)
 
-    fig.tight_layout()
+    # 预留固定顶部空间（标题行+左右统计框），标题是否为空都不改变 axes 位置
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
 
     # 统计信息框：左上角显示 总点位/成功点位/失败点位，右上角显示 成功次数/失败次数/成功率
     total_success = sum(s for s, _ in data.values())
@@ -1075,24 +1075,23 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     right_stats = (f"成功次数：{total_success}    失败次数：{total_fail}    "
                    f"成功率：{rate:.1f}%")
 
-    # 先渲染一次，取标题的实际中心高度，把统计框对齐到同一水平线
+    # 统计框固定在标题行高度，不依赖标题是否为空（位置保持一致）
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     fig.set_canvas(FigureCanvasAgg(fig))
     fig.canvas.draw()
-    title_bbox = ax.title.get_window_extent(fig.canvas.get_renderer())
-    title_cy_fig = (title_bbox.y0 + title_bbox.y1) / 2.0 / fig.bbox.height
-    _lt = fig.text(0.012, title_cy_fig, left_stats, ha="left", va="center",
+    stats_y = 0.955
+    _lt = fig.text(0.02, stats_y, left_stats, ha="left", va="center",
                    fontproperties=CHINESE_FONT, zorder=7,
                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                              edgecolor="#AAAAAA", alpha=0.92))
     _lt.set_fontsize(12)
-    _rt = fig.text(0.988, title_cy_fig, right_stats, ha="right", va="center",
+    _rt = fig.text(0.98, stats_y, right_stats, ha="right", va="center",
                    fontproperties=CHINESE_FONT, zorder=7,
                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                              edgecolor="#AAAAAA", alpha=0.92))
     _rt.set_fontsize(12)
     # 底部图例：点位颜色说明 + 特殊点位（黄色空心圈注），与界面图例一致
-    fig.subplots_adjust(bottom=0.09)
+    fig.subplots_adjust(bottom=0.09, top=0.88)
     _items = [("#E53935", "仅失败", True),
               ("#2E7D32", "仅成功", True),
               ("#C8E6C9", "成败兼有", True),
@@ -1112,77 +1111,110 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     return fig
 
 
-def draw_heatmap_table(data: dict, cfg: GridConfig) -> Figure:
-    """绘制热力图，返回 Figure 对象（标注格式：点位(数量)，如 A2(2)）"""
+def draw_heatmap_table(data: dict, cfg: GridConfig, title: str = None) -> Figure:
+    """绘制热力图（圆角方块 + 水平深度刻度尺），返回 Figure。
+
+    标注格式：点位(次数)，如 A2\n(2)；数量为 0 留空。
+    成功面板用 Blues、失败面板用 Reds，色阶刻度尺横放在每个面板下方。
+    """
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import FancyBboxPatch
+    from matplotlib.cm import ScalarMappable
+
     row_labels = cfg.row_letters
     col_labels = cfg.col_numbers
+    n_rows, n_cols = len(row_labels), len(col_labels)
 
-    success_matrix = np.zeros((len(row_labels), len(col_labels)))
-    fail_matrix = np.zeros((len(row_labels), len(col_labels)))
-
+    success_matrix = np.zeros((n_rows, n_cols))
+    fail_matrix = np.zeros((n_rows, n_cols))
     for point_id, (success, fail) in data.items():
-        coord = get_point_coord(point_id, cfg)
-        if coord is None:
-            continue
         letter = point_id[0].upper()
         col_num = int(point_id[1:])
-        row_idx = cfg.row_letters.index(letter)
-        col_idx = col_num - 1
-        if 0 <= row_idx < len(row_labels) and 0 <= col_idx < len(col_labels):
-            success_matrix[row_idx][col_idx] = success
-            fail_matrix[row_idx][col_idx] = fail
+        if letter in row_labels:
+            i = row_labels.index(letter)
+            j = col_num - 1
+            if 0 <= i < n_rows and 0 <= j < n_cols:
+                success_matrix[i][j] = success
+                fail_matrix[i][j] = fail
 
-    def build_annot(matrix):
-        """生成两行标注矩阵：第一行点位，第二行次数（如 A2\\n(2)）；数量为 0 留空"""
-        annot = np.empty(matrix.shape, dtype=object)
-        for i, rl in enumerate(row_labels):
-            for j, cl in enumerate(col_labels):
-                v = int(matrix[i][j])
-                annot[i][j] = f"{rl}{cl}\n({v})" if v > 0 else ""
-        return annot
+    # 列数越多格子越窄，标注字号相应缩小
+    annot_fontsize = 10 if n_cols <= 12 else 9
+    _gap = 0.06          # 方块内缩：留出白色间隙
+    _round = 0.10        # 圆角大小
 
-    # 列数越多格子越窄，标注字号相应缩小；分行后字号略加大以便阅读
-    annot_fontsize = 10 if cfg.n_cols <= 12 else 9
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(cfg.fig_width, max(4.5, cfg.fig_height * 0.55)))
 
-    fig, (ax1, ax2) = plt.subplots(1, 2,
-                                   figsize=(cfg.fig_width, max(4.5, cfg.fig_height * 0.55)))
+    def draw_panel(ax, matrix, cmap_name, panel_title, cbar_label):
+        vmax = max(1.0, float(np.nanmax(matrix)))
+        norm = mcolors.Normalize(vmin=0, vmax=vmax)
+        cmap_obj = plt.get_cmap(cmap_name)
+        for i in range(n_rows):
+            for j in range(n_cols):
+                v = matrix[i][j]
+                # 圆角方块
+                ax.add_patch(FancyBboxPatch(
+                    (j + _gap, i + _gap), 1 - 2 * _gap, 1 - 2 * _gap,
+                    boxstyle=f"round,pad=0,rounding_size={_round}",
+                    facecolor=cmap_obj(norm(v)), edgecolor="none"))
+                if v > 0:
+                    # 深色格用白字、浅色格用黑字，保证可读
+                    txt_color = "#FFFFFF" if norm(v) > 0.6 else "#1A1A1A"
+                    ax.text(j + 0.5, i + 0.5,
+                            f"{row_labels[i]}{col_labels[j]}\n({int(v)})",
+                            ha="center", va="center",
+                            fontsize=annot_fontsize, color=txt_color)
+        ax.set_xlim(-0.9, n_cols)
+        ax.set_ylim(n_rows + 0.7, 0)
+        ax.set_aspect("equal")           # 方块保持正方形
+        ax.set_xticks([])
+        ax.set_yticks([])
+        # 行列标签与方块视图相同：字号20、加粗、灰色，靠近方块
+        for i, letter in enumerate(row_labels):
+            ax.text(-0.28, i + 0.5, letter, ha="center", va="center",
+                    fontsize=20, fontweight="bold", color="#888888",
+                    fontproperties=CHINESE_FONT)
+        for j, col in enumerate(col_labels):
+            ax.text(j + 0.5, n_rows + 0.28, str(col), ha="center",
+                    va="center", fontsize=20, fontweight="bold",
+                    color="#888888")
+        ax.set_title(panel_title, fontsize=13, fontweight="bold",
+                     fontproperties=CHINESE_FONT)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        # 竖直深度刻度尺，放在面板右侧
+        sm = ScalarMappable(norm=norm, cmap=cmap_obj)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, orientation="vertical",
+                            pad=0.04, fraction=0.08)
+        cbar.set_label(cbar_label, fontproperties=CHINESE_FONT)
 
-    sns.heatmap(success_matrix, annot=build_annot(success_matrix), fmt="",
-                cmap="Blues", xticklabels=col_labels, yticklabels=row_labels,
-                ax=ax1, annot_kws={"fontsize": annot_fontsize},
-                linewidths=0.8, linecolor="white",
-                cbar_kws={"label": "成功次数"})
-    ax1.set_title("成功次数热力图（点位+次数）", fontsize=13, fontweight="bold",
-                  fontproperties=CHINESE_FONT)
+    draw_panel(ax1, success_matrix, "Blues",
+               "成功次数热力图", "成功次数")
+    draw_panel(ax2, fail_matrix, "Reds",
+               "失败次数热力图", "失败次数")
 
-    sns.heatmap(fail_matrix, annot=build_annot(fail_matrix), fmt="",
-                cmap="Reds", xticklabels=col_labels, yticklabels=row_labels,
-                ax=ax2, annot_kws={"fontsize": annot_fontsize},
-                linewidths=0.8, linecolor="white",
-                cbar_kws={"label": "失败次数"})
-    ax2.set_title("失败次数热力图（点位+次数）", fontsize=13, fontweight="bold",
-                  fontproperties=CHINESE_FONT)
-
-    fig.tight_layout()
+    if title:
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        # 标题相对两个方块面板的整体中心居中（colorbar 会让面板中心偏离 figure 中心）
+        _panel_cx = (ax1.get_position().x0 + ax2.get_position().x1) / 2
+        fig.suptitle(title, fontsize=14, fontweight="bold",
+                     color="#333333", y=0.97, x=_panel_cx)
+    else:
+        fig.tight_layout()
     return fig
 
-def draw_block_view(data: dict, cfg: GridConfig, title: str,
-                    compare_data: dict = None,
-                    compare_title: str = None,
-                    marked_points=None) -> Figure:
-    """方块视图（圆角方块表格）。
 
-    - 单面板（默认，compare_data=None）：当前数据一块方块表；
-    - 对比模式（compare_data 不为空）：左右双面板，右面板按同格成功次数
-      显示 ▲绿（Δ提升）/ ▼红（Δ退化）/ —灰（持平）。
+def draw_block_view(data: dict, cfg: GridConfig, title: str,
+                    marked_points=None) -> Figure:
+    """方块视图（圆角方块表格，单面板）。
 
     配色（按成功次数）：
       (0,0) 未覆盖 → 灰
       成功=0 失败>0 → 红（0次全失败）
       成功=1 → 黄
       成功>=2 → 绿色热力色系（Greens，由浅绿到深绿，次数越多越深）
-    采样点：仅 marked_points 中的点位，蓝色圆点标在方块右上方。
-    面板标题已按需求移除。
+    采样点：仅 marked_points 中的点位，蓝色圆点（外圈白环）标在方块右上方。
     """
     from matplotlib.patches import FancyBboxPatch
     from matplotlib import cm
@@ -1220,22 +1252,14 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
             return "#FFFFFF"
         return "#1A1A1A"
 
-    if compare_data:
-        per_r = panel_stats(compare_data)
-        fig = Figure(figsize=(cfg.fig_width * 1.85,
-                              max(5.0, cfg.fig_height * 0.95)), dpi=100)
-        ax1 = fig.add_subplot(121)
-        ax2 = fig.add_subplot(122)
-    else:
-        fig = Figure(figsize=(max(6.0, cfg.fig_width * 0.95),
-                              max(5.0, cfg.fig_height * 0.95)), dpi=100)
-        ax1 = fig.add_subplot(111)
-        ax2 = None
+    fig = Figure(figsize=(max(6.0, cfg.fig_width * 0.95),
+                          max(5.0, cfg.fig_height * 0.95)), dpi=100)
+    ax1 = fig.add_subplot(111)
 
     _gap = 0.09          # 方块内缩：增大方块间距
     _round = 0.12        # 圆角大小
 
-    def draw_panel(ax, d, per, right=False):
+    def draw_panel(ax, d, per):
         n_rows, n_cols = cfg.n_rows, cfg.n_cols
         ax.set_xlim(-1.0, n_cols + 0.2)
         ax.set_ylim(n_rows + 0.8, -0.8)
@@ -1261,31 +1285,19 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
                             va="center", fontsize=15, color="white")
                     ax.text(x0 + 0.80, y0 + 0.22, "●", ha="center",
                             va="center", fontsize=10, color="#4169E1")
-                if right:
-                    ls = data.get(pid, (0, 0))[0]
-                    if s + f > 0 or ls > 0:
-                        if s > ls:
-                            mark, mcolor = "▲", "#2E7D32"
-                        elif s < ls:
-                            mark, mcolor = "▼", "#E53935"
-                        else:
-                            mark, mcolor = "—", "#999999"
-                        ax.text(x0 + 0.13, y0 + 0.86, mark, ha="center",
-                                va="center", fontsize=9, color=mcolor,
-                                fontproperties=CHINESE_FONT)
         # 行/列标签：靠近方块、加粗、灰色
         for i, letter in enumerate(cfg.row_letters):
-            ax.text(-0.16, i + 0.5, letter, ha="center", va="center",
-                    fontsize=12, fontweight="bold", color="#888888",
+            ax.text(-0.28, i + 0.5, letter, ha="center", va="center",
+                    fontsize=20, fontweight="bold", color="#888888",
                     fontproperties=CHINESE_FONT)
         for j, col in enumerate(cfg.col_numbers):
-            ax.text(j + 0.5, n_rows + 0.08, str(col), ha="center",
-                    va="center", fontsize=11, fontweight="bold",
+            ax.text(j + 0.5, n_rows + 0.28, str(col), ha="center",
+                    va="center", fontsize=20, fontweight="bold",
                     color="#888888")
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
-            spine.set_color("#CCCCCC")
+            spine.set_visible(False)
 
     draw_panel(ax1, data, per)
 
@@ -1293,36 +1305,54 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
     g_light = mcolors.to_hex(cm.Greens(0.32))
     g_mid = mcolors.to_hex(cm.Greens(0.60))
     g_dark = mcolors.to_hex(cm.Greens(0.90))
-    _legend = [
-        ("#E53935", "0次全失败", "●", 0.114),
-        ("#FFC107", "成功1次", "●", 0.10),
-        (g_light, "", "●", 0.04),
-        (g_mid, "", "●", 0.04),
-        (g_dark, "成功≥2（由浅到深）", "●", 0.15),
-        ("#4169E1", "采样点", "●", 0.085),
+    _legend_items = [
+        ("#E53935", "0次全失败"),
+        ("#FFC107", "成功1次"),
+        (g_light, ""),
+        (g_mid, ""),
+        (g_dark, "成功≥2次"),
+        ("#4169E1", "采样点"),
     ]
-    if compare_data:
-        draw_panel(ax2, compare_data, per_r, right=True)
-        fig.subplots_adjust(bottom=0.10, wspace=0.18)
-        _legend += [
-            ("#2E7D32", "Δ提升", "▲", 0.10),
-            ("#999999", "持平", "—", 0.08),
-            ("#E53935", "Δ退化", "▼", 0.10),
-        ]
-    else:
-        fig.subplots_adjust(bottom=0.10)
+    if title:
+        # 标题下移，靠近方块
+        fig.suptitle(title, fontsize=14, fontweight="bold",
+                     color="#333333", y=0.90)
+    fig.subplots_adjust(bottom=0.10, top=0.88)
 
-    _total = sum(item[3] for item in _legend)
-    _lx = (1 - _total) / 2  # 图例整体居中
-    for _color, _label, _sym, _step in _legend:
-        fig.text(_lx, 0.03, _sym, color=_color, ha="center", va="center",
-                 fontsize=11)
+    # 精确居中：先渲染测量各单元真实宽度，再按总宽居中排布
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    fig.set_canvas(FigureCanvasAgg(fig))
+    fig.canvas.draw()
+    _renderer = fig.canvas.get_renderer()
+    _inv = fig.transFigure.inverted()
+    _gap = 0.028        # 单元间距
+    _sym_pad = 0.012    # 符号与文字间距
+    _units = []
+    for _color, _label in _legend_items:
+        _st = fig.text(0.0, 0.03, "●", color=_color, ha="center",
+                       va="center", fontsize=11)
+        _lt = None
         if _label:
-            fig.text(_lx + 0.014, 0.03, _label, color="#555555",
-                     ha="left", va="center", fontsize=9)
-        _lx += _step
+            _lt = fig.text(0.0, 0.03, _label, color="#555555", ha="left",
+                           va="center", fontsize=9)
+        _sw = _st.get_window_extent(_renderer).transformed(_inv).width
+        if _lt is not None:
+            _lw = _lt.get_window_extent(_renderer).transformed(_inv).width
+            _uw = _sw / 2 + _sym_pad + _lw
+        else:
+            _uw = _sw
+        _units.append((_st, _lt, _sw, _uw))
+    _total_w = sum(u[3] for u in _units) + _gap * (len(_units) - 1)
+    _cx = (1.0 - _total_w) / 2.0
+    for _st, _lt, _sw, _uw in _units:
+        _st.set_x(_cx + _sw / 2)
+        if _lt is not None:
+            _lt.set_x(_cx + _sw / 2 + _sym_pad)
+        _cx += _uw + _gap
+    fig.set_canvas(None)
 
     return fig
+
 
 
 
@@ -1971,9 +2001,6 @@ class MainWindow(QMainWindow):
         self.current_file = None
         self.grid_cfg = GridConfig()          # 当前网格画布配置
         self.current_chart_type = "grid"      # 当前预览的图类型
-        self.compare_data = None              # 方块视图对比模式右侧数据（导入第二份文件）
-        self.compare_title = "对比数据"
-        self._block_compare = False           # 方块视图是否处于对比模式（子功能）
         self.show_other_names = True          # 默认标注其余（未测试）点位名称
         self._center_line_style = "none"        # 中心线样式：none 不显示 / dashed 断线 / solid 实线
         self.chart_title = None               # 自定义网格图标题（None=默认标题）
@@ -2001,7 +2028,6 @@ class MainWindow(QMainWindow):
         self.import_menu.addAction("浏览文件…", self.browse_file)
         self.import_menu.addAction("拖拽导入…", self.open_drop_import)
         self.import_menu.addAction("粘贴导入…", self.open_paste_import)
-        self.import_menu.addAction("导入对比数据…", self.open_compare_import)
 
         self.settings_menu = self.menuBar().addMenu("⚙️ 设置")
         self.settings_menu.addAction("画布设置…", self.open_canvas_settings)
@@ -2202,33 +2228,14 @@ class MainWindow(QMainWindow):
         tab_layout = QHBoxLayout(self.chart_tabs)
         tab_layout.setContentsMargins(0, 0, 0, 0)
 
-        tab_layout.addWidget(QLabel("网格图标题:"))
-        self.title_edit = QLineEdit("网格点位坐标图")
+        tab_layout.addWidget(QLabel("图表标题:"))
+        self.title_edit = QLineEdit()
         self.title_edit.setMaximumWidth(280)
-        self.title_edit.setToolTip("编辑网格坐标图标题；清空或改回默认值则使用默认标题（含中心点）")
+        self.title_edit.setToolTip("编辑图表标题；清空或改回默认值则使用默认标题")
         self.title_edit.textChanged.connect(self.on_title_changed)
         tab_layout.addWidget(self.title_edit)
         tab_layout.addStretch()
 
-        self.block_compare_btn = QPushButton("对比模式")
-        self.block_compare_btn.setCheckable(True)
-        self.block_compare_btn.setToolTip("方块视图子功能：切换单面板 / 左右双面板对比（需先导入对比数据）")
-        self.block_compare_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #F5F5F5;
-                color: #333333;
-                border: 1px solid #BBBBBB;
-                padding: 6px 14px;
-                border-radius: 4px;
-                font-size: 12px;
-            }
-            QPushButton:hover { background-color: #E8F0FE; border-color: #4169E1; }
-            QPushButton:checked { background-color: #4169E1; color: white; border-color: #4169E1; }
-            QPushButton:disabled { background-color: #EEEEEE; color: #AAAAAA; }
-        """)
-        self.block_compare_btn.toggled.connect(self.toggle_block_compare)
-        self.block_compare_btn.setEnabled(False)
-        tab_layout.addWidget(self.block_compare_btn)
 
         self.copy_btn = QPushButton("保存图片")
         self.copy_btn.setToolTip("保存当前图表：复制到剪贴板或另存为 PNG（默认文件名同步标题）")
@@ -2295,6 +2302,11 @@ class MainWindow(QMainWindow):
         legend_layout = QHBoxLayout(self.legend_bar)
         legend_layout.setContentsMargins(2, 6, 2, 0)
         legend_layout.setSpacing(4)
+        # —— 网格坐标图图例组 ——
+        self.legend_grid_group = QWidget()
+        g_layout = QHBoxLayout(self.legend_grid_group)
+        g_layout.setContentsMargins(0, 0, 0, 0)
+        g_layout.setSpacing(4)
         for color, label in (("#E53935", "仅失败"),
                              ("#2E7D32", "仅成功"),
                              ("#C8E6C9", "成败兼有")):
@@ -2305,9 +2317,9 @@ class MainWindow(QMainWindow):
                 f"border: 1px solid #808080;")
             txt = QLabel(label)
             txt.setStyleSheet("color: #666666; font-size: 12px;")
-            legend_layout.addWidget(swatch)
-            legend_layout.addWidget(txt)
-            legend_layout.addSpacing(8)
+            g_layout.addWidget(swatch)
+            g_layout.addWidget(txt)
+            g_layout.addSpacing(8)
         ring = QLabel()
         ring.setFixedSize(14, 14)
         ring.setStyleSheet(
@@ -2315,9 +2327,38 @@ class MainWindow(QMainWindow):
             "background-color: transparent;")
         ring_txt = QLabel("特殊标注点位")
         ring_txt.setStyleSheet("color: #666666; font-size: 12px;")
-        legend_layout.addWidget(ring)
-        legend_layout.addWidget(ring_txt)
-        legend_layout.addStretch()
+        g_layout.addWidget(ring)
+        g_layout.addWidget(ring_txt)
+        g_layout.addStretch()
+        # —— 方块视图图例组 ——
+        self.legend_block_group = QWidget()
+        b_layout = QHBoxLayout(self.legend_block_group)
+        b_layout.setContentsMargins(0, 0, 0, 0)
+        b_layout.setSpacing(4)
+        _block_legend = [
+            ("#E53935", "0次全失败"),
+            ("#FFC107", "成功1次"),
+            ("#b2e0ac", ""),
+            ("#4bb062", ""),
+            ("#006428", "成功≥2次"),
+            ("#4169E1", "采样点"),
+        ]
+        for color, label in _block_legend:
+            swatch = QLabel()
+            swatch.setFixedSize(12, 12)
+            swatch.setStyleSheet(
+                f"background-color: {color}; border-radius: 6px;")
+            b_layout.addWidget(swatch)
+            if label:
+                txt = QLabel(label)
+                txt.setStyleSheet("color: #666666; font-size: 12px;")
+                b_layout.addWidget(txt)
+                b_layout.addSpacing(10)
+            else:
+                b_layout.addSpacing(4)   # 无文字绿点紧凑排列
+        b_layout.addStretch()           # 后侧 stretch：整体居中
+        legend_layout.addWidget(self.legend_grid_group)
+        legend_layout.addWidget(self.legend_block_group)
         chart_layout.addWidget(self.legend_bar)
 
         splitter.addWidget(chart_group)
@@ -2355,37 +2396,6 @@ class MainWindow(QMainWindow):
         if self.import_pasted_data(text):
             dlg.accept()
 
-    def toggle_block_compare(self, checked: bool):
-        """方块视图子功能：切换单面板 / 双面板对比模式"""
-        if checked and not self.compare_data:
-            QMessageBox.information(
-                self, "提示",
-                "请先通过 📥 导入 → 导入对比数据… 加载第二组数据")
-            self.block_compare_btn.setChecked(False)
-            return
-        self._block_compare = checked
-        if self.current_chart_type == "block":
-            self.show_chart("block")
-
-    def open_compare_import(self):
-        """导入第二份数据文件作为方块视图对比模式的右侧面板（左侧用当前表格数据）"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择对比数据文件（方块视图右侧面板）", "",
-            "Excel 文件 (*.xlsx *.xls);;CSV 文件 (*.csv);;所有文件 (*)")
-        if not file_path:
-            return
-        data, notes, error = read_table_data(file_path)
-        if error:
-            QMessageBox.warning(self, "错误", f"读取对比数据失败:\n{error}")
-            return
-        self.compare_data = data
-        self.compare_title = os.path.basename(file_path)
-        # 自动进入方块视图并开启对比模式
-        self._block_compare = True
-        self.block_compare_btn.setChecked(True)
-        self.show_chart("block")
-        self.status_bar.showMessage(
-            f"已导入对比数据: {os.path.basename(file_path)}")
 
     def browse_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -2703,8 +2713,8 @@ class MainWindow(QMainWindow):
             self._updating = False
         self._apply_marked_style()   # 重建后恢复标注黄底
 
-    def _update_status_bar(self):
-        """按当前数据刷新主界面左下角状态栏"""
+    def _status_text(self):
+        """当前数据统计文本（主窗口状态栏与图表预览左下角共用，保证一致）"""
         data = self.current_data or {}
         total_success = sum(s for s, f in data.values())
         total_fail = sum(f for s, f in data.values())
@@ -2712,10 +2722,14 @@ class MainWindow(QMainWindow):
         rate = total_success / total * 100 if total > 0 else 0
         success_points = sum(1 for s, f in data.values() if s > 0)
         fail_points = sum(1 for s, f in data.values() if f > 0)
-        self.status_bar.showMessage(
+        return (
             f"共 {len(data)} 个点位 | 成功点位: {success_points} | 失败点位: {fail_points} | "
             f"成功: {total_success} | 失败: {total_fail} | 成功率: {rate:.1f}%"
         )
+
+    def _update_status_bar(self):
+        """按当前数据刷新主界面状态栏"""
+        self.status_bar.showMessage(self._status_text())
 
     def _clear_chart_placeholder(self):
         """清空图表预览区并显示占位提示"""
@@ -3228,31 +3242,22 @@ class MainWindow(QMainWindow):
             self.show_chart(self.current_chart_type)
 
     def on_title_changed(self, text: str):
-        """标题编辑：非空且非默认值则用作自定义标题，否则回退默认标题"""
-        stripped = text.strip()
-        if stripped and stripped != "网格点位坐标图":
-            self.chart_title = stripped
-        else:
-            self.chart_title = None
-        if self.current_chart_type == "grid":
-            self.show_chart("grid")
+        """标题编辑：非空作为自定义标题，清空则回退各视图默认标题"""
+        self.chart_title = text.strip() or None
+        if self.current_chart_type in ("grid", "block", "heatmap"):
+            self.show_chart(self.current_chart_type)
 
     def copy_image(self):
         """一键复制当前图表到剪贴板"""
         if not self.current_data:
             return
         if self.current_chart_type == "heatmap":
-            fig = draw_heatmap_table(self.current_data, self.grid_cfg)
+            fig = draw_heatmap_table(self.current_data, self.grid_cfg, self.chart_title)
         elif self.current_chart_type == "block":
-            if self._block_compare and self.compare_data:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据", self.compare_data,
-                                      self.compare_title,
-                                      marked_points=self._marked)
-            else:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据",
-                                      marked_points=self._marked)
+            fig = draw_block_view(
+                self.current_data, self.grid_cfg,
+                self.chart_title,
+                marked_points=self._marked)
         else:
             fig = draw_grid_visualization(
                 self.current_data, self.grid_cfg, self.show_other_names,
@@ -3276,18 +3281,13 @@ class MainWindow(QMainWindow):
         base = (self.chart_title or "网格点位可视化")
         base = re.sub(r'[\\/:*?"<>|]', "_", base).strip() or "网格点位可视化"
         if self.current_chart_type == "heatmap":
-            fig = draw_heatmap_table(self.current_data, self.grid_cfg)
+            fig = draw_heatmap_table(self.current_data, self.grid_cfg, self.chart_title)
             default_name = f"{base}_热力图.png"
         elif self.current_chart_type == "block":
-            if self._block_compare and self.compare_data:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据", self.compare_data,
-                                      self.compare_title,
-                                      marked_points=self._marked)
-            else:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据",
-                                      marked_points=self._marked)
+            fig = draw_block_view(
+                self.current_data, self.grid_cfg,
+                self.chart_title,
+                marked_points=self._marked)
             default_name = f"{base}_方块视图.png"
         else:
             fig = draw_grid_visualization(
@@ -3324,18 +3324,13 @@ class MainWindow(QMainWindow):
         if not self.current_data:
             return
         if self.current_chart_type == "heatmap":
-            fig = draw_heatmap_table(self.current_data, self.grid_cfg)
+            fig = draw_heatmap_table(self.current_data, self.grid_cfg, self.chart_title)
             title = "热力图 - 全屏"
         elif self.current_chart_type == "block":
-            if self._block_compare and self.compare_data:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据", self.compare_data,
-                                      self.compare_title,
-                                      marked_points=self._marked)
-            else:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      "当前数据",
-                                      marked_points=self._marked)
+            fig = draw_block_view(
+                self.current_data, self.grid_cfg,
+                self.chart_title,
+                marked_points=self._marked)
             title = "方块视图 - 全屏"
         else:
             fig = draw_grid_visualization(
@@ -3372,8 +3367,8 @@ class MainWindow(QMainWindow):
 
     @property
     def _untested_color(self) -> str:
-        """未测试点位填充色：已生成点位（自动插入/导入）→ 灰色；尚未生成 → 黑色"""
-        return "#A9A9A9" if self._has_points else "#000000"
+        """未测试点位填充色：统一灰色（取消黑色点位状态）"""
+        return "#A9A9A9"
 
     def show_chart(self, chart_type: str):
         """显示图表预览。
@@ -3389,22 +3384,15 @@ class MainWindow(QMainWindow):
         if chart_type == "block" and not self.current_data:
             QMessageBox.information(self, "提示", "方块视图需要先导入或录入点位数据")
             chart_type = "grid"
-        # 对比模式但右侧数据缺失时自动回退单面板
-        if self._block_compare and not self.compare_data:
-            self._block_compare = False
-            self.block_compare_btn.setChecked(False)
         self.current_chart_type = chart_type
+        # 图例栏按视图切换：网格图显示网格图例，方块图显示方块图例，热力图隐藏
+        self.legend_grid_group.setVisible(chart_type == "grid")
+        self.legend_block_group.setVisible(chart_type == "block")
+        self.legend_bar.setVisible(chart_type in ("grid", "block"))
         # 同步“视图”菜单勾选与当前图类型提示
         self.view_grid_action.setChecked(chart_type == "grid")
         self.view_heat_action.setChecked(chart_type == "heatmap")
         self.view_block_action.setChecked(chart_type == "block")
-        # 对比模式按钮仅在方块视图启用，勾选态同步当前模式；
-        # 程序化同步时屏蔽信号，避免 toggled 反向改写 _block_compare
-        self.block_compare_btn.blockSignals(True)
-        self.block_compare_btn.setEnabled(chart_type == "block")
-        self.block_compare_btn.setChecked(
-            chart_type == "block" and self._block_compare)
-        self.block_compare_btn.blockSignals(False)
         _type_names = {"grid": "网格坐标图", "heatmap": "热力图",
                        "block": "方块视图"}
         self.chart_type_label.setText("当前：" + _type_names.get(chart_type, "网格坐标图"))
@@ -3416,21 +3404,15 @@ class MainWindow(QMainWindow):
                 marked_points=self._marked,
                 center_line_style=self._center_line_style)
         elif chart_type == "block":
-            left_title = (os.path.basename(self.current_file)
-                          if getattr(self, "current_file", None)
-                          else "当前数据")
-            if self._block_compare and self.compare_data:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      left_title, self.compare_data,
-                                      self.compare_title,
-                                      marked_points=self._marked)
-            else:
-                fig = draw_block_view(self.current_data, self.grid_cfg,
-                                      left_title,
-                                      marked_points=self._marked)
+            # 应用“图表标题”输入框内容；置空则不显示标题
+            fig = draw_block_view(self.current_data, self.grid_cfg,
+                                  self.chart_title,
+                                  marked_points=self._marked)
         else:
-            fig = draw_heatmap_table(self.current_data, self.grid_cfg)
+            fig = draw_heatmap_table(self.current_data, self.grid_cfg, self.chart_title)
 
+        # 状态统计同步到图表预览下方图例栏（红框位置），切换视图实时刷新
+        self._update_status_bar()
         self._show_fig(fig)
 
     def _fig_to_qpixmap(self, fig):
