@@ -969,11 +969,11 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
             continue
         x, y = coord
 
-        # 点位颜色：只有失败→红；只有成功→绿；成败兼有→橙；0/0→不画彩色（保持灰）
+        # 点位颜色：仅失败→玫红；仅成功→深绿；成败兼有→浅绿；0/0→不画彩色（保持灰）
         if fail > 0 and success <= 0:
-            dot_color = "#E53935"
+            dot_color = "#E24D4C"
         elif success > 0 and fail <= 0:
-            dot_color = "#2E7D32"
+            dot_color = "#659A25"
         elif success > 0 and fail > 0:
             dot_color = "#C8E6C9"
         else:
@@ -1092,8 +1092,8 @@ def draw_grid_visualization(data: dict, cfg: GridConfig,
     _rt.set_fontsize(12)
     # 底部图例：点位颜色说明 + 特殊点位（黄色空心圈注），与界面图例一致
     fig.subplots_adjust(bottom=0.09, top=0.88)
-    _items = [("#E53935", "仅失败", True),
-              ("#2E7D32", "仅成功", True),
+    _items = [("#E24D4C", "仅失败", True),
+              ("#659A25", "仅成功", True),
               ("#C8E6C9", "成败兼有", True),
               ("#FFC107", "特殊标注点位", False)]
     _lx = 0.30
@@ -1209,11 +1209,12 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
                     marked_points=None) -> Figure:
     """方块视图（圆角方块表格，单面板）。
 
-    配色（按成功次数）：
+    配色（按成功/失败次数）：
       (0,0) 未覆盖 → 灰
-      成功=0 失败>0 → 红（0次全失败）
-      成功=1 → 黄
-      成功>=2 → 绿色热力色系（Greens，由浅绿到深绿，次数越多越深）
+      成功=0 失败>0 → 玫红（仅失败）
+      成功>0 失败=0 → 深绿（完全成功）
+      成功=1 失败>0 → 橙黄
+      成功>=2 失败>0 → 浅绿（成败兼有）
     采样点：仅 marked_points 中的点位，蓝色圆点（外圈白环）标在方块右上方。
     """
     from matplotlib.patches import FancyBboxPatch
@@ -1230,25 +1231,22 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
     if marked_points is None:
         marked_points = set()
 
-    def green_hex(s, per):
-        # 成功次数 s(>=2) 映射到 Greens 0.32（浅）..0.90（深）
-        norm = (s - 2) / max(1, per - 2)
-        return mcolors.to_hex(cm.Greens(0.32 + 0.58 * norm))
-
     def cell_color(s, f, per):
         if s == 0 and f == 0:
             return "#D0D0D0"          # 未覆盖点位：灰
         if s == 0:
-            return "#E53935"          # 0次全失败：红
+            return "#E24D4C"          # 仅失败（成功=0）：玫红
+        if f == 0:
+            return "#659A25"          # 完全成功（失败=0）：深绿
         if s == 1:
-            return "#FFC107"          # 成功1次：黄
-        return green_hex(s, per)      # 成功>=2：绿色热力色系
+            return "#EFA028"          # 成败兼有且成功1次：橙黄
+        return "#98C559"              # 成败兼有且成功>=2：浅绿
 
     def text_color(s, f, per):
-        # 全失败红格（s=0 f>0）或失败次数为0（f=0）白字，其余黑字
+        # 玫红（仅失败）、深绿（完全成功）白字；橙黄、浅绿黑字
         if s == 0 and f > 0:
             return "#FFFFFF"
-        if f == 0:
+        if f == 0 and s > 0:
             return "#FFFFFF"
         return "#1A1A1A"
 
@@ -1301,16 +1299,12 @@ def draw_block_view(data: dict, cfg: GridConfig, title: str,
 
     draw_panel(ax1, data, per)
 
-    # 图例（绿色三档示例，无文字项不占标签宽）
-    g_light = mcolors.to_hex(cm.Greens(0.32))
-    g_mid = mcolors.to_hex(cm.Greens(0.60))
-    g_dark = mcolors.to_hex(cm.Greens(0.90))
+    # 图例：四种语义状态 + 采样点
     _legend_items = [
-        ("#E53935", "0次全失败"),
-        ("#FFC107", "成功1次"),
-        (g_light, ""),
-        (g_mid, ""),
-        (g_dark, "成功≥2次"),
+        ("#E24D4C", "仅失败"),
+        ("#EFA028", "成功1次"),
+        ("#98C559", "成功≥2次"),
+        ("#659A25", "完全成功"),
         ("#4169E1", "采样点"),
     ]
     if title:
@@ -2307,8 +2301,8 @@ class MainWindow(QMainWindow):
         g_layout = QHBoxLayout(self.legend_grid_group)
         g_layout.setContentsMargins(0, 0, 0, 0)
         g_layout.setSpacing(4)
-        for color, label in (("#E53935", "仅失败"),
-                             ("#2E7D32", "仅成功"),
+        for color, label in (("#E24D4C", "仅失败"),
+                             ("#659A25", "仅成功"),
                              ("#C8E6C9", "成败兼有")):
             swatch = QLabel()
             swatch.setFixedSize(14, 14)
@@ -2336,11 +2330,10 @@ class MainWindow(QMainWindow):
         b_layout.setContentsMargins(0, 0, 0, 0)
         b_layout.setSpacing(4)
         _block_legend = [
-            ("#E53935", "0次全失败"),
-            ("#FFC107", "成功1次"),
-            ("#b2e0ac", ""),
-            ("#4bb062", ""),
-            ("#006428", "成功≥2次"),
+            ("#E24D4C", "仅失败"),
+            ("#EFA028", "成功1次"),
+            ("#98C559", "成功≥2次"),
+            ("#659A25", "完全成功"),
             ("#4169E1", "采样点"),
         ]
         for color, label in _block_legend:
